@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Singapore buses and trains</title>
+<style>
+  html,body{margin:0;height:100%;background:#c9dde8;color:#1b1d21;font-family:system-ui,Segoe UI,Arial,sans-serif;overflow:hidden}
+  #map{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+  #map.drag{cursor:grabbing}
+  #panel{position:absolute;left:12px;top:12px;width:288px;max-width:calc(100% - 48px);max-height:calc(100% - 48px);overflow:auto;background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(27,29,33,.18);padding:14px 14px 10px;z-index:5}
+  h1{font-size:17px;margin:0 0 2px}
+  h2{font-size:13px;margin:0 0 6px}
+  .mode{font-size:12px;margin:0 0 10px;color:#5b616b}
+  .mode b{color:#1b1d21}
+  #clock{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;margin:0 0 2px}
+  #clockmode{font-size:12px;color:#5b616b;margin:0 0 8px}
+  .row{display:flex;gap:6px;align-items:center;margin:0 0 8px}
+  input[type=date]{flex:1;font:inherit;font-size:13px;padding:4px 6px;border:1px solid #c5c9d0;border-radius:6px;background:#fff;color:inherit;min-width:0}
+  input[type=range]{width:100%;margin:0 0 8px}
+  button{font:inherit;font-size:13px;padding:4px 9px;border:1px solid #c5c9d0;border-radius:6px;background:#fff;color:inherit;cursor:pointer}
+  button:hover{background:#f1f3f5}
+  button[aria-pressed=true]{background:#1b1d21;border-color:#1b1d21;color:#fff}
+  .speeds{flex-wrap:wrap}
+  .sect{border-top:1px solid #e3e6ea;padding:8px 0 4px}
+  .check{display:flex;gap:7px;align-items:center;font-size:13px;margin:0 0 4px;cursor:pointer}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  td{padding:2px 0}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;padding-left:8px}
+  .sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:7px;vertical-align:-2px;box-sizing:border-box}
+  .sw.hollow{background:#fff !important;border:2px solid}
+  .sw.dim{opacity:.5}
+  .sw.line{width:18px;height:6px;border-radius:3px;vertical-align:1px}
+  #spark{width:100%;height:56px;display:block;margin:4px 0 2px;cursor:pointer}
+  .small{font-size:12px;color:#5b616b;margin:0 0 6px;line-height:1.35}
+  details{font-size:12px;color:#3d424a;margin:2px 0 6px}
+  details summary{cursor:pointer;font-weight:600;color:#1b1d21;font-size:13px;margin:0 0 4px}
+  details li{margin:0 0 4px;line-height:1.35}
+  details ul{padding-left:16px;margin:4px 0}
+  #depots td{font-size:12px}
+  .credit{font-size:10.5px;color:#6b717b;margin:4px 0 0;line-height:1.35}
+  #tip{position:absolute;z-index:6;pointer-events:none;background:#1b1d21;color:#fff;font-size:12px;line-height:1.4;padding:6px 9px;border-radius:6px;max-width:280px;display:none}
+  #tip b{font-weight:600}
+  #zoom{position:absolute;right:12px;bottom:12px;z-index:5;display:flex;gap:6px}
+  #zoom button{background:#fff;box-shadow:0 1px 6px rgba(27,29,33,.18);min-width:34px}
+</style></head>
+<body>
+<canvas id="map">Map of Singapore with the estimated position of every public bus and train.</canvas>
+
+<aside id="panel">
+  <h1>Singapore buses and trains</h1>
+  <p class="mode"><b>Timetable estimate.</b> Every bus and train where the published frequencies and running times put it, not live positions.</p>
+  <div id="clock">--:--:--</div>
+  <div id="clockmode"></div>
+  <div class="row"><input type="date" id="date" aria-label="Date"><button id="now" type="button">Now</button></div>
+  <input type="range" id="time" min="0" max="86399" step="30" aria-label="Time of day">
+  <div class="row speeds" id="speeds" role="group" aria-label="Playback speed">
+    <button type="button" data-speed="0">Pause</button>
+    <button type="button" data-speed="1">1&times;</button>
+    <button type="button" data-speed="60">60&times;</button>
+    <button type="button" data-speed="300">300&times;</button>
+    <button type="button" data-speed="1200">1200&times;</button>
+  </div>
+  <div class="row"><button type="button" id="day">Play the whole day from 3am</button></div>
+
+  <div class="sect">
+    <h2>Buses</h2>
+    <canvas id="spark" aria-label="Buses out of the depots through the day; click to jump to that time"></canvas>
+    <table id="busstate"></table>
+    <table id="busops" style="margin-top:6px"></table>
+    <p class="small" id="fleet"></p>
+  </div>
+
+  <div class="sect">
+    <h2>MRT and LRT</h2>
+    <table id="trainstate"></table>
+    <table id="trains" style="margin-top:6px"></table>
+  </div>
+
+  <div class="sect">
+    <label class="check"><input type="checkbox" id="showBuses" checked><span>Buses</span></label>
+    <label class="check"><input type="checkbox" id="showTrains" checked><span>Trains</span></label>
+    <label class="check"><input type="checkbox" id="showRoads" checked><span>Bus routes</span></label>
+  </div>
+
+  <div class="sect">
+    <h2>For slides</h2>
+    <p class="small">Draws the day shown above, 3am to 3am, frame by frame, with a title, clock, counts and key on each frame, and saves it in the exports folder. The video plays in PowerPoint (Insert, Video, This Device).</p>
+    <div class="row"><button type="button" id="mkmp4">Make a video (MP4, 1080p, 1 min)</button></div>
+    <div class="row"><button type="button" id="mkgif">Make a GIF (720p, 40 s)</button></div>
+    <div class="row"><button type="button" id="mkgifhq">Make a full-detail GIF (1080p, map only)</button></div>
+    <div class="row"><button type="button" id="mkdepots">Make the bus depots video (MP4, 1080p, 1 min)</button></div>
+    <div class="row"><button type="button" id="mkdepotsgif">Make the bus depots GIF (email size)</button></div>
+    <label class="check"><input type="checkbox" id="exview"><span>Frame the current view, not the whole island</span></label>
+    <p class="small" id="exstate"></p>
+  </div>
+
+  <details id="depotbox"><summary>Depots</summary><table id="depots"></table></details>
+  <details><summary>How this is worked out</summary><ul id="how"></ul></details>
+  <p class="credit" id="credit"></p>
+</aside>
+
+<div id="zoom"><button type="button" id="zin" aria-label="Zoom in">+</button><button type="button" id="zout" aria-label="Zoom out">&minus;</button><button type="button" id="zfit">Fit</button></div>
+<div id="tip" role="status"></div>
+
+<script src="sg-data.js"></script>
+<script>
+(function () {
+'use strict';
+const D = window.SG_DATA;
+if (!D) { document.body.innerHTML = '<p style="padding:2em">sg-data.js is missing: run build/build.ps1.</p>'; return; }
+const el = id => document.getElementById(id);
+const Qd = D.meta.q, DAY = 86400000;
+
+const BANDS = [
+  [[0, 1.15], [6.5 * 3600, 0.85], [8.5 * 3600, 1.05], [17 * 3600, 0.85], [19 * 3600, 1.15]],
+  [[0, 1.15], [8 * 3600, 1.0], [20 * 3600, 1.15]],
+  [[0, 1.15], [9 * 3600, 1.05], [20 * 3600, 1.15]]
+];
+const LAYOVER = 240;
+const WAIT_MAX = 2400;
+const PREP = 300;
+const DEAD_SPEED = 25 / 3.6, DEAD_DETOUR = 1.3;
+const BUS_DWELL = 12, TRAIN_DWELL = 25;
+const BUS = { length: 12, width: 2.55 };
+const TURN_MAX = 900, LEAD = 60, TAIL = 45;
+
+const KX = 111320 * Math.cos(D.meta.lat0 * Math.PI / 180), KY = 110574;
+const px = lon => (lon - D.meta.lon0) * KX, py = lat => -(lat - D.meta.lat0) * KY;
+function decode(a) {
+  const n = a.length / 2, x = new Float64Array(n), y = new Float64Array(n), cum = new Float64Array(n);
+  let lon = 0, lat = 0;
+  for (let i = 0; i < n; i++) {
+    lon += a[2 * i]; lat += a[2 * i + 1];
+    x[i] = px(lon / Qd); y[i] = py(lat / Qd);
+    if (i) cum[i] = cum[i - 1] + Math.hypot(x[i] - x[i - 1], y[i] - y[i - 1]);
+  }
+  return { x, y, cum, n };
+}
+const geoms = D.geoms.map(decode);
+function pointAt(g, s) {
+  const c = g.cum, last = g.n - 1;
+  if (last < 1) return { x: g.x[0], y: g.y[0], a: 0 };
+  if (s <= 0 || s >= c[last]) {
+    const i = s <= 0 ? 0 : last - 1, a = Math.atan2(g.y[i + 1] - g.y[i], g.x[i + 1] - g.x[i]), b = s <= 0 ? 0 : last, over = s <= 0 ? s : s - c[last];
+    return { x: g.x[b] + Math.cos(a) * over, y: g.y[b] + Math.sin(a) * over, a };
+  }
+  let lo = 0, hi = last;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (c[m] <= s) lo = m; else hi = m; }
+  const span = c[hi] - c[lo], f = span > 0 ? (s - c[lo]) / span : 0;
+  return { x: g.x[lo] + f * (g.x[hi] - g.x[lo]), y: g.y[lo] + f * (g.y[hi] - g.y[lo]), a: Math.atan2(g.y[hi] - g.y[lo], g.x[hi] - g.x[lo]) };
+}
+
+const OPS = D.operators.map(o => ({ id: o.id, name: o.name, rgb: o.colour }));
+const depots = D.depots.map((d, i) => ({ i, name: d.name, op: d.op, x: px(d.lon), y: py(d.lat), cap: 0, out: 0 }));
+const stops = D.stops.map(s => ({ code: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
+const services = D.services.map((s, i) => ({ i, n: s.n, name: s.name, op: s.op, depot: depots[s.depot], guess: !!s.guess, group: s.n.replace(/[ABCT]$/, '') }));
+const pats = D.patterns.map((p, i) => ({ i, svc: services[p.v], g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, w: p.w, straight: !!p.x, r: p.r, dur: p.t[p.t.length - 1] }));
+const RL = D.rail.lines.map(l => ({ name: l.name, short: l.short, rgb: l.colour, cars: l.cars, length: l.length }));
+const rstations = D.rail.stations.map(s => ({ id: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
+const rpats = D.rail.patterns.map((p, i) => ({ i, line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, win: p.win, dur: p.t[p.t.length - 1] }));
+const startOf = p => pointAt(p.g, p.d[0]), endOf = p => pointAt(p.g, p.d[p.d.length - 1]);
+const roadRun = (g, rev) => ({ g, rev, secs: g.cum[g.n - 1] / DEAD_SPEED + 60 });
+const lineRun = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, rev: false, secs: len * DEAD_DETOUR / DEAD_SPEED + 120 }; };
+for (const p of pats) {
+  const dep = p.svc.depot;
+  p.outRun = p.r && p.r[0] >= 0 ? roadRun(geoms[p.r[0]], false) : lineRun(dep, startOf(p));
+  p.inRun = p.r && p.r[1] >= 0 ? roadRun(geoms[p.r[1]], true) : lineRun(endOf(p), dep);
+}
+
+const groups = new Map();
+for (const p of pats) { const k = p.svc.group; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+for (const [gk, list] of groups) {
+  const ends = [...new Set(list.flatMap(p => [p.s[0], p.s[p.s.length - 1]]))], parent = new Map(ends.map(e => [e, e]));
+  const find = e => { while (parent.get(e) !== e) e = parent.get(e); return e; };
+  for (const a of ends) for (const b of ends) if (a < b && Math.hypot(stops[a].x - stops[b].x, stops[a].y - stops[b].y) < 600) parent.set(find(a), find(b));
+  for (const p of list) { p.from = gk + '|' + find(p.s[0]); p.to = gk + '|' + find(p.s[p.s.length - 1]); }
+}
+
+const dayType = dayKey => { const dow = new Date(dayKey * DAY).getUTCDay(); return dow === 6 ? 1 : dow === 0 ? 2 : 0; };
+const DAYTYPE_NAMES = ['Monday to Friday', 'Saturday', 'Sunday'];
+const factor = (dt, t) => { t %= 86400; let f = 1; for (const [from, k] of BANDS[dt]) if (t >= from) f = k; return f; };
+function departures(first, last, h, dt) {
+  const out = []; let t = first;
+  while (t <= last) { out.push(t); t += Math.max(120, h * factor(dt, t)); }
+  if (out.length && last - out[out.length - 1] > h * 0.4) out.push(last);
+  return out;
+}
+
+const goesHome = (a, b) => b.start - a.end > Math.max(WAIT_MAX, a.p.inRun.secs + b.p.outRun.secs + PREP + 1800);
+const OUT = 0, WAIT = 1, RUN = 2, IN = 3;
+
+const plans = new Map();
+function planFor(dt) {
+  if (plans.has(dt)) return plans.get(dt);
+  const byGroup = new Map(); let tripCount = 0;
+  for (const p of pats) {
+    const w = p.w && p.w[dt]; if (!w) continue;
+    for (const start of departures(w[0], w[1], p.h, dt)) {
+      const k = p.svc.group; if (!byGroup.has(k)) byGroup.set(k, []);
+      byGroup.get(k).push({ p, start, end: start + p.dur, bus: null }); tripCount++;
+    }
+  }
+  const buses = [];
+  for (const list of byGroup.values()) {
+    list.sort((a, b) => a.start - b.start);
+    const byEnd = list.slice().sort((a, b) => a.end - b.end), pools = new Map(); let ai = 0;
+    for (const tr of list) {
+      while (ai < byEnd.length && byEnd[ai].end + LAYOVER <= tr.start) { const a = byEnd[ai++]; if (!pools.has(a.p.to)) pools.set(a.p.to, []); pools.get(a.p.to).push(a.bus); }
+      const pool = pools.get(tr.p.from);
+      let bus = pool && pool.length ? pool.pop() : null;
+      if (!bus) {
+        let best = null, from = null, at = -1;
+        for (const q of pools.values()) for (let i = 0; i < q.length; i++) {
+          const last = q[i].trips[q[i].trips.length - 1];
+          if ((!best || last.end < best.trips[best.trips.length - 1].end) && goesHome(last, tr)) { best = q[i]; from = q; at = i; }
+        }
+        if (best) { from.splice(at, 1); bus = best; }
+      }
+      if (!bus) { bus = { id: buses.length, depot: tr.p.svc.depot, op: tr.p.svc.op, trips: [] }; buses.push(bus); }
+      bus.trips.push(tr); tr.bus = bus;
+    }
+  }
+  for (const bus of buses) {
+    const segs = [], dep = bus.depot, first = bus.trips[0];
+    const goOut = tr => { const R = tr.p.outRun; segs.push({ k: OUT, t0: tr.start - PREP - R.secs, t1: tr.start - PREP, run: R, trip: tr }); segs.push({ k: WAIT, t0: tr.start - PREP, t1: tr.start, trip: tr }); };
+    goOut(first);
+    bus.trips.forEach((tr, i) => {
+      segs.push({ k: RUN, t0: tr.start, t1: tr.end, trip: tr });
+      const nx = bus.trips[i + 1], R = tr.p.inRun;
+      if (!nx) { segs.push({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, trip: tr }); return; }
+      if (goesHome(tr, nx)) { segs.push({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, trip: tr }); goOut(nx); }
+      else segs.push({ k: WAIT, t0: tr.end, t1: nx.start, trip: nx, after: tr });
+    });
+    bus.segs = segs; bus.t0 = segs[0].t0; bus.t1 = segs[segs.length - 1].t1;
+    bus.slot = (bus.id * 7919) % 97;
+  }
+  const curve = new Uint16Array(30 * 12);
+  for (const bus of buses) {
+    let k = 0;
+    for (let i = Math.max(0, Math.ceil(bus.t0 / 300)); i < curve.length && i * 300 < bus.t1; i++) {
+      const t = i * 300; while (k + 1 < bus.segs.length && bus.segs[k + 1].t0 <= t) k++;
+      if (t < bus.segs[k].t1) curve[i]++;
+    }
+  }
+  const plan = { dt, buses, trips: tripCount, curve, perDepot: depots.map(d => buses.filter(b => b.depot === d).length) };
+  plans.set(dt, plan);
+  return plan;
+}
+for (let dt = 0; dt < 3; dt++) planFor(dt).perDepot.forEach((n, i) => { depots[i].cap = Math.max(depots[i].cap, n); });
+const FLEET = depots.reduce((s, d) => s + d.cap, 0);
+
+const railPlans = new Map();
+function railFor(dt) {
+  if (railPlans.has(dt)) return railPlans.get(dt);
+  const trips = [];
+  for (const p of rpats) for (const start of departures(p.win[0], p.win[1], p.h, dt)) trips.push({ p, start, end: start + p.dur });
+  trips.sort((a, b) => a.start - b.start);
+  const waiting = new Map(), key = (st, li) => st + '|' + li;
+  for (const tr of trips.slice().sort((a, b) => a.end - b.end)) { const k = key(tr.p.s[tr.p.s.length - 1], tr.p.li); if (!waiting.has(k)) waiting.set(k, []); waiting.get(k).push(tr); }
+  for (const dep of trips) {
+    const q = waiting.get(key(dep.p.s[0], dep.p.li)); if (!q) continue;
+    while (q.length && (q[0].next || q[0].end < dep.start - TURN_MAX)) q.shift();
+    const i = q.findIndex(a => !a.next); if (i < 0 || q[i].end > dep.start) continue;
+    q[i].next = dep; dep.prev = q[i];
+  }
+  railWorkings(trips);
+  railPlans.set(dt, trips);
+  return trips;
+}
+
+const rdepots = (D.rail.depots || []).map((d, i) => ({ i, name: d.name, x: px(d.lon), y: py(d.lat), lines: d.lines, cap: RL.map(() => 0), access: {} }));
+const stationsOfLine = RL.map((_, li) => [...new Set(rpats.filter(p => p.li === li).flatMap(p => p.s))]);
+for (const d of rdepots) for (const li of d.lines) {
+  let best = -1, bd = Infinity;
+  for (const si of stationsOfLine[li]) { const s = rstations[si], dd = Math.hypot(s.x - d.x, s.y - d.y); if (dd < bd) { bd = dd; best = si; } }
+  d.access[li] = best;
+}
+const depotsOfLine = RL.map((_, li) => rdepots.filter(d => d.lines.includes(li)));
+function alongLine(li, a, b) {
+  let best = null;
+  for (const q of rpats) {
+    if (q.li !== li) continue;
+    const i = q.s.indexOf(a), j = q.s.lastIndexOf(b); if (i < 0 || j <= i) continue;
+    if (!best || q.d[j] - q.d[i] < best.s1 - best.s0) best = { g: q.g, s0: q.d[i], s1: q.d[j], secs: (q.t[j] - q.t[i]) * 0.8 };
+  }
+  return best;
+}
+const straight = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, s0: 0, s1: len, secs: len / 8 + 60 }; };
+function railWorkings(trips) {
+  for (const head of trips) {
+    if (head.prev) continue;
+    const chain = [head]; while (chain[chain.length - 1].next) chain.push(chain[chain.length - 1].next);
+    const tail = chain[chain.length - 1], li = head.p.li, A = head.p.s[0], B = tail.p.s[tail.p.s.length - 1];
+    let dep = null, bd = Infinity;
+    for (const d of depotsOfLine[li]) { const v = Math.hypot(d.x - rstations[A].x, d.y - rstations[A].y); if (v < bd) { bd = v; dep = d; } }
+    if (!dep) continue;
+    const X = dep.access[li];
+    const a1 = X === A ? null : alongLine(li, X, A), h1 = straight(dep, a1 ? pointAt(a1.g, a1.s0) : startOf(head.p));
+    const arrive = head.start - 240, t1 = arrive - (a1 ? a1.secs : 0), t0 = t1 - h1.secs;
+    head.out = { t0, t2: arrive, legs: [[t0, t1, h1]].concat(a1 ? [[t1, arrive, a1]] : []) };
+    const a2 = X === B ? null : alongLine(li, B, X), h2 = straight(a2 ? pointAt(a2.g, a2.s1) : endOf(tail.p), dep);
+    const leave = tail.end + 60, u1 = leave + (a2 ? a2.secs : 0);
+    tail.in = { t0: leave, t2: u1 + h2.secs, legs: (a2 ? [[leave, u1, a2]] : []).concat([[u1, u1 + h2.secs, h2]]) };
+    const span = { dep, li, t0, t1: tail.in.t2 };
+    for (const tr of chain) { tr.dep = dep; tr.span = span; }
+  }
+}
+for (let dt = 0; dt < 3; dt++) {
+  const spans = [...new Set(railFor(dt).filter(t => t.span).map(t => t.span))];
+  for (const d of rdepots) for (const li of d.lines) {
+    const mine = spans.filter(s => s.dep === d && s.li === li);
+    for (let t = 0; t < 30 * 3600; t += 300) d.cap[li] = Math.max(d.cap[li], mine.filter(s => s.t0 <= t && t < s.t1).length);
+  }
+}
+const TRAIN_FLEET = rdepots.reduce((s, d) => s + d.cap.reduce((a, b) => a + b, 0), 0);
+
+function progress(p, tau, dwell) {
+  const T = p.t, n = T.length;
+  if (tau <= 0) return { s: p.d[0], h: 0, moving: false };
+  if (tau >= T[n - 1]) return { s: p.d[n - 1], h: n - 2, moving: false };
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (T[m] <= tau) lo = m; else hi = m; }
+  const run = T[lo + 1] - T[lo], move = Math.max(run - Math.min(dwell, run * 0.4), 1);
+  let f = Math.min((tau - T[lo]) / move, 1); const moving = f < 1;
+  f = f * f * (3 - 2 * f);
+  return { s: p.d[lo] + f * (p.d[lo + 1] - p.d[lo]), h: lo, moving };
+}
+
+let busCount = null;
+function busesAt(sim) {
+  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [];
+  const count = { run: 0, dead: 0, wait: 0, ops: OPS.map(() => 0), depotOut: depots.map(() => 0) };
+  for (const [dk, t] of [[day - 1, secs + 86400], [day, secs]]) {
+    for (const bus of planFor(dayType(dk)).buses) {
+      if (t < bus.t0 || t >= bus.t1) continue;
+      const segs = bus.segs; let lo = 0, hi = segs.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (segs[m].t0 <= t) lo = m; else hi = m - 1; }
+      const sg = segs[lo]; if (t >= sg.t1) continue;
+      count.depotOut[bus.depot.i]++;
+      let x, y, a, s = null, p = null, g = null, dir = 1;
+      if (sg.k === RUN) {
+        p = sg.trip.p; const pr = progress(p, t - sg.trip.start, BUS_DWELL); s = pr.s;
+        const pt = pointAt(p.g, s); x = pt.x; y = pt.y; a = pt.a; count.run++; count.ops[bus.op]++;
+        out.push({ bus, sg, t, x, y, a, s, p, g: p.g, dir: 1, h: pr.h, moving: pr.moving });
+        continue;
+      }
+      if (sg.k === WAIT) {
+        p = sg.trip.p; s = p.d[0] - 14 - (bus.slot % 4) * 15;
+        const pt = pointAt(p.g, s); x = pt.x; y = pt.y; a = pt.a; g = p.g; count.wait++;
+      } else {
+        let f = (t - sg.t0) / Math.max(sg.t1 - sg.t0, 1); f = f * f * (3 - 2 * f);
+        const R = sg.run, L = R.g.cum[R.g.n - 1]; g = R.g; dir = R.rev ? -1 : 1; s = R.rev ? L * (1 - f) : L * f;
+        const pt = pointAt(g, s); x = pt.x; y = pt.y; a = pt.a + (R.rev ? Math.PI : 0); count.dead++;
+      }
+      out.push({ bus, sg, t, x, y, a, s, p, g, dir });
+    }
+  }
+  busCount = count;
+  return out;
+}
+let trainCount = null;
+function trainsAt(sim) {
+  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [];
+  const count = { run: 0, wait: 0, dead: 0, perLine: RL.map(() => 0), depotOut: rdepots.map(() => RL.map(() => 0)) };
+  for (const [dk, t] of [[day - 1, secs + 86400], [day, secs]]) {
+    for (const tr of railFor(dayType(dk))) {
+      if (tr.start - 7200 > t) break;
+      const from = tr.prev ? Math.min(tr.prev.end, tr.start) : tr.out ? tr.out.t0 : tr.start - LEAD;
+      const to = tr.next ? tr.end : tr.in ? tr.in.t2 : tr.end + TAIL;
+      if (t < from || t >= to) continue;
+      count.perLine[tr.p.li]++;
+      if (tr.dep) count.depotOut[tr.dep.i][tr.p.li]++;
+      const runs = !tr.prev && tr.out && t < tr.out.t2 ? tr.out.legs : !tr.next && tr.in && t >= tr.in.t0 ? tr.in.legs : null;
+      const leg = runs && runs.find(L => t >= L[0] && t < L[1]);
+      if (leg) {
+        let f = (t - leg[0]) / Math.max(leg[1] - leg[0], 1); f = f * f * (3 - 2 * f);
+        const s = leg[2].s0 + (leg[2].s1 - leg[2].s0) * f, pt = pointAt(leg[2].g, s);
+        count.dead++; out.push({ tr, t, g: leg[2].g, s, x: pt.x, y: pt.y, alpha: 1, kind: 'dead', home: !!(tr.in && runs === tr.in.legs) });
+        continue;
+      }
+      const pr = progress(tr.p, t - tr.start, TRAIN_DWELL), pt = pointAt(tr.p.g, pr.s), state = t < tr.start ? 'waiting' : t >= tr.end ? 'done' : 'running';
+      const alpha = tr.dep ? 1 : t < tr.start && !tr.prev ? 1 + (t - tr.start) / LEAD : t > tr.end && !tr.next ? 1 - (t - tr.end) / TAIL : 1;
+      if (state === 'running') count.run++; else count.wait++;
+      out.push({ tr, t, g: tr.p.g, s: pr.s, h: pr.h, moving: pr.moving, x: pt.x, y: pt.y, alpha: Math.min(Math.max(alpha, 0), 1), state, kind: state === 'running' ? 'run' : 'wait' });
+    }
+  }
+  trainCount = count; out.perLine = count.perLine;
+  return out;
+}
+
+const sgNow = () => Date.now() + 8 * 3600000;
+let live = true, speed = 1, sim = sgNow();
+const hhmm = s => { s = ((Math.round(s) % 86400) + 86400) % 86400; return String(Math.floor(s / 3600)).padStart(2, '0') + ':' + String(Math.floor(s % 3600 / 60)).padStart(2, '0'); };
+
+const canvas = el('map');
+let ctx = canvas.getContext('2d');
+let base = document.createElement('canvas'), bctx = base.getContext('2d');
+const panel = el('panel');
+let W = 0, H = 0, dpr = 1, baseDirty = true, fitK = 0.03, exporting = false, depotLabels = true, trainYards = true;
+let keepClear = () => { const r = panel.getBoundingClientRect(); return [{ x0: r.left, y0: r.top, x1: r.right + 4, y1: r.bottom + 4 }]; };
+const view = { cx: 0, cy: 0, k: 0.03 };
+const show = { buses: true, trains: true, roads: true };
+const bounds = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+const land = D.land.map(decode);
+for (const g of land) for (let i = 0; i < g.n; i++) { bounds.x0 = Math.min(bounds.x0, g.x[i]); bounds.x1 = Math.max(bounds.x1, g.x[i]); bounds.y0 = Math.min(bounds.y0, g.y[i]); bounds.y1 = Math.max(bounds.y1, g.y[i]); }
+const sx = x => (x - view.cx) * view.k + W / 2, sy = y => (y - view.cy) * view.k + H / 2;
+const MAX_K = 8;
+
+function fit() {
+  const b = bounds, inset = W > 760 ? panel.offsetWidth + 24 : 0, m = 16;
+  fitK = Math.min((W - inset - 2 * m) / (b.x1 - b.x0), (H - 2 * m) / (b.y1 - b.y0));
+  view.k = fitK; view.cx = (b.x0 + b.x1) / 2 - inset / (2 * view.k); view.cy = (b.y0 + b.y1) / 2;
+  baseDirty = true;
+}
+function resize() {
+  dpr = window.devicePixelRatio || 1; W = window.innerWidth; H = window.innerHeight;
+  for (const c of [canvas, base]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  baseDirty = true;
+}
+function zoomAt(mx, my, factor) {
+  const k = Math.min(Math.max(view.k * factor, fitK * 0.6), MAX_K);
+  const wx = (mx - W / 2) / view.k + view.cx, wy = (my - H / 2) / view.k + view.cy;
+  view.k = k; view.cx = wx - (mx - W / 2) / k; view.cy = wy - (my - H / 2) / k; baseDirty = true;
+}
+
+const path = (lines, close) => { const p = new Path2D(); for (const g of lines) { p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); if (close) p.closePath(); } return p; };
+const landPath = path(land, true);
+const roadPath = path([...new Set(pats.filter(p => !p.straight).map(p => p.g))]);
+const railPaths = RL.map((l, li) => path(D.rail.draw.filter(r => r.l === li).map(r => decode(r.g))));
+const areas = D.areas.map(a => ({ name: a[0].toUpperCase(), x: px(a[1] / Qd), y: py(a[2] / Qd), km2: a[3] })).sort((a, b) => b.km2 - a.km2);
+const terminals = (() => {
+  const seen = new Map();
+  for (const p of pats) { const st = stops[p.s[0]]; if (/\b(Int|Ter)\b/.test(st.name) && !seen.has(st.name)) seen.set(st.name, { name: st.name.replace(/ Int$/, ' Interchange').replace(/ Ter$/, ' Terminal'), x: st.x, y: st.y, n: 0 }); if (seen.has(st.name)) seen.get(st.name).n++; }
+  return [...seen.values()].sort((a, b) => b.n - a.n);
+})();
+const stationDots = (() => {
+  const m = new Map();
+  rstations.forEach(s => { const k = s.name; if (!m.has(k)) m.set(k, { name: s.name, ids: [], x: 0, y: 0, n: 0 }); const o = m.get(k); o.ids.push(s.id); o.x += s.x; o.y += s.y; o.n++; });
+  return [...m.values()].map(o => ({ name: o.name, ids: o.ids, x: o.x / o.n, y: o.y / o.n }));
+})();
+const yard = d => d.yard || (d.yard = (() => { const cols = Math.max(12, Math.round(Math.sqrt(6 * d.cap))), rows = Math.max(1, Math.ceil(d.cap / cols)); return { cols, rows, w: cols * 4, h: rows * 15 }; })());
+const railYards = rdepots.map(d => {
+  const perCol = 20, groups = d.lines.filter(li => d.cap[li] > 0).map(li => ({ li, n: d.cap[li], cols: Math.ceil(d.cap[li] / perCol), len: RL[li].length + 10, xoff: 0 }));
+  let w = 0; for (const g of groups) { g.xoff = w; w += g.cols * g.len; }
+  const n = groups.reduce((s, g) => s + g.n, 0), h = Math.max(1, Math.min(Math.max(0, ...groups.map(g => g.n)), perCol)) * 6;
+  let cx = d.x, cy = d.y; const bus = depots.find(b => Math.hypot(b.x - d.x, b.y - d.y) < 500);
+  if (bus) { cx = bus.x; cy = bus.y + yard(bus).h / 2 + 36 + h / 2; }
+  return { d, groups, n, perCol, w, h, cx, cy, shared: !!bus };
+});
+const slotXY = (Y, g, i) => [Y.cx - Y.w / 2 + g.xoff + Math.floor(i / Y.perCol) * g.len + 5, Y.cy - Y.h / 2 + (i % Y.perCol) * 6 + 1.4];
+
+function drawBase() {
+  const c = bctx, k = view.k;
+  baseDirty = false;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = '#c9dde8'; c.fillRect(0, 0, W, H);
+  c.setTransform(k * dpr, 0, 0, k * dpr, (W / 2 - view.cx * k) * dpr, (H / 2 - view.cy * k) * dpr);
+  c.lineJoin = c.lineCap = 'round';
+  c.fillStyle = '#f3f1ea'; c.fill(landPath); c.strokeStyle = '#f3f1ea'; c.lineWidth = 1.2 / k; c.stroke(landPath);
+  if (show.roads) {
+    if (k > 0.25) { c.strokeStyle = '#d6cfbf'; c.lineWidth = Math.max(11, 3 / k); c.stroke(roadPath); c.strokeStyle = '#ffffff'; c.lineWidth = Math.max(8, 1.5 / k); c.stroke(roadPath); }
+    else { c.strokeStyle = k > 0.08 ? '#cdc5b3' : '#d9d2c2'; c.lineWidth = (k > 0.08 ? 1.3 : 0.9) / k; c.stroke(roadPath); }
+  }
+  c.fillStyle = '#e2ddd0'; c.strokeStyle = '#a8a08e'; c.lineWidth = 1 / k;
+  for (const d of depots) { const y = yard(d); c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); }
+  if (show.trains) {
+    c.fillStyle = '#dde2e8'; c.strokeStyle = '#97a1ab';
+    if (trainYards) for (const Y of railYards) if (Y.n) { c.fillRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); c.strokeRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); }
+    const w = Math.min(Math.max(5 * k, 1.6), 6);
+    c.strokeStyle = '#ffffff'; c.lineWidth = (w + 2) / k; for (const p of railPaths) c.stroke(p);
+    RL.forEach((l, i) => { c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = w / k; c.stroke(railPaths[i]); });
+  }
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (show.trains && k > 0.02) {
+    const r = Math.min(Math.max(k * 40, 1.8), 6);
+    c.fillStyle = '#ffffff'; c.strokeStyle = '#1b1d21'; c.lineWidth = r > 3 ? 1.5 : 1;
+    for (const s of stationDots) { const X = sx(s.x), Y = sy(s.y); if (X < -10 || X > W + 10 || Y < -10 || Y > H + 10) continue; c.beginPath(); c.arc(X, Y, r, 0, 7); c.fill(); c.stroke(); }
+  }
+  if (k > 0.6) { c.fillStyle = '#8f8a7e'; for (const s of stops) { const X = sx(s.x), Y = sy(s.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue; c.fillRect(X - 1.5, Y - 1.5, 3, 3); } }
+  const placed = keepClear();
+  const label = (text, X, Y, font, fill, halo, dx) => {
+    c.font = font; const w = c.measureText(text).width;
+    for (const x of dx === 0 ? [X - w / 2] : [X + dx, X - dx - w]) {
+      const box = { x0: x - 2, y0: Y - 8, x1: x + w + 2, y1: Y + 8 };
+      if (box.x0 < 2 || box.x1 > W - 2 || box.y0 < 2 || box.y1 > H - 2) continue;
+      if (placed.some(b => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) continue;
+      placed.push(box); c.lineWidth = 3; c.strokeStyle = halo; c.strokeText(text, x, Y); c.fillStyle = fill; c.fillText(text, x, Y); return true;
+    }
+    return false;
+  };
+  c.textBaseline = 'middle'; c.lineJoin = 'round';
+  if (depotLabels) for (const d of depots) label(d.name.replace(/ Bus Depot$| Depot$/, ' depot'), sx(d.x), sy(d.y) + Math.max(yard(d).h * k / 2, 4) + 9, '600 11px system-ui, Segoe UI, Arial, sans-serif', '#5a4a2a', '#f3f1ea', 0);
+  if (show.trains && depotLabels && trainYards) for (const Y of railYards) if (Y.n && !Y.shared) label(Y.d.name.replace(/ Depot$/, ' depot'), sx(Y.cx), sy(Y.cy) + Math.max(Y.h * k / 2, 3) + 9, '600 11px system-ui, Segoe UI, Arial, sans-serif', '#3a4652', '#f3f1ea', 0);
+  if (k > 0.05 && depotLabels) for (const s of terminals) label(s.name, sx(s.x), sy(s.y), '11px system-ui, Segoe UI, Arial, sans-serif', '#3d424a', '#f3f1ea', 7);
+  if (show.trains && k > 0.09) for (const s of stationDots) label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 8);
+  if (k < 0.2) for (const a of areas) label(a.name, sx(a.x), sy(a.y), '600 10px system-ui, Segoe UI, Arial, sans-serif', '#a39c8c', '#f3f1ea', 0);
+}
+
+const rgba = (rgb, a) => 'rgba(' + rgb + ',' + a + ')';
+let buses = [], trains = [], DOT = 2.2, SNAP = false;
+function drawDynamic() {
+  const k = view.k;
+  ctx.lineJoin = 'round';
+  if (show.buses) for (const d of depots) {
+    const y = yard(d), parked = Math.max(0, d.cap - busCount.depotOut[d.i]), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
+    if (sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) continue;
+    if (k * 4 < 1.2) {
+      const f = d.cap ? parked / d.cap : 0, rows = Math.ceil(parked / y.cols);
+      ctx.fillStyle = rgba(OPS[d.op].rgb, 0.85);
+      ctx.fillRect(sx(x0), sy(y0 + y.h - rows * 15), Math.max(y.w * k, 2), Math.max(rows * 15 * k, f > 0 ? 1.5 : 0));
+      continue;
+    }
+    ctx.fillStyle = rgba(OPS[d.op].rgb, 0.85);
+    for (let i = 0; i < parked; i++) { const c = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillRect(sx(x0 + c * 4 + 0.7), sy(y0 + r * 15 + 1.5), BUS.width * k, BUS.length * k); }
+  }
+  if (show.buses) {
+    const len = Math.max(BUS.length * k, 0), wid = Math.max(BUS.width * k, 2.6), side = k > 0.4 ? 2 * k : 0;
+    if (len < 4) {
+      const s = SNAP ? Math.round(Math.max(DOT, Math.min(3.2, k * 60))) : Math.max(DOT, Math.min(3.2, k * 60));
+      for (let o = 0; o < OPS.length; o++) for (const kind of [RUN, WAIT, OUT]) {
+        ctx.beginPath(); let any = false;
+        for (const b of buses) { if (b.bus.op !== o || (kind === OUT ? b.sg.k !== OUT && b.sg.k !== IN : b.sg.k !== kind)) continue; const X = sx(b.x), Y = sy(b.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue; if (SNAP) ctx.rect(Math.round(X - s / 2), Math.round(Y - s / 2), s, s); else ctx.rect(X - s / 2, Y - s / 2, s, s); any = true; }
+        if (!any) continue;
+        if (kind === OUT) { ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = 'rgb(' + OPS[o].rgb + ')'; ctx.lineWidth = 1; ctx.stroke(); }
+        else { ctx.fillStyle = rgba(OPS[o].rgb, kind === WAIT ? 0.45 : 1); ctx.fill(); }
+      }
+    } else {
+      for (const b of buses) {
+        const X0 = sx(b.x), Y0 = sy(b.y); if (X0 < -len || X0 > W + len || Y0 < -len || Y0 > H + len) continue;
+        let ax, ay, bx, by;
+        { const f = pointAt(b.g, b.s + b.dir * BUS.length / 2), r = pointAt(b.g, b.s - b.dir * BUS.length / 2); ax = r.x; ay = r.y; bx = f.x; by = f.y; }
+        const L = Math.hypot(bx - ax, by - ay) || 1, nx = (by - ay) / L * side / k, ny = -(bx - ax) / L * side / k;
+        let X1 = sx(ax + nx), Y1 = sy(ay + ny), X2 = sx(bx + nx), Y2 = sy(by + ny);
+        if (Math.hypot(X2 - X1, Y2 - Y1) < len * 0.6) { const c = [(X1 + X2) / 2, (Y1 + Y2) / 2], a = Math.atan2(by - ay, bx - ax); X1 = c[0] - Math.cos(a) * len / 2; Y1 = c[1] - Math.sin(a) * len / 2; X2 = c[0] + Math.cos(a) * len / 2; Y2 = c[1] + Math.sin(a) * len / 2; }
+        const col = OPS[b.bus.op].rgb, dead = b.sg.k === OUT || b.sg.k === IN;
+        ctx.beginPath(); ctx.moveTo(X1, Y1); ctx.lineTo(X2, Y2); ctx.lineCap = 'butt';
+        ctx.lineWidth = wid + 2; ctx.strokeStyle = '#1b1d21'; ctx.stroke();
+        ctx.lineWidth = wid; ctx.strokeStyle = dead ? '#ffffff' : b.sg.k === WAIT ? rgba(col, 0.55) : 'rgb(' + col + ')'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(X2 - (X2 - X1) / len * 2, Y2 - (Y2 - Y1) / len * 2, Math.max(wid * 0.22, 1), 0, 7); ctx.fillStyle = dead ? 'rgb(' + col + ')' : '#ffffff'; ctx.fill();
+      }
+    }
+  }
+  if (show.trains && trainYards) for (const Y of railYards) {
+    if (!Y.n || sx(Y.cx - Y.w / 2) > W || sy(Y.cy - Y.h / 2) > H || sx(Y.cx + Y.w / 2) < 0 || sy(Y.cy + Y.h / 2) < 0) continue;
+    const out = trainCount.depotOut[Y.d.i];
+    if (6 * k < 1.5) {
+      let yy = Y.cy + Y.h / 2;
+      for (const g of Y.groups) { const parked = Math.max(0, g.n - out[g.li]); if (!parked) continue; const hh = Y.h * parked / Y.n; ctx.fillStyle = 'rgb(' + RL[g.li].rgb + ')'; ctx.fillRect(sx(Y.cx - Y.w / 2), sy(yy - hh), Math.max(Y.w * k, 2), Math.max(hh * k, 1.2)); yy -= hh; }
+      continue;
+    }
+    for (const g of Y.groups) {
+      const parked = Math.max(0, g.n - out[g.li]), L = RL[g.li].length; ctx.fillStyle = 'rgb(' + RL[g.li].rgb + ')';
+      for (let i = 0; i < parked; i++) { const q = slotXY(Y, g, i); ctx.fillRect(sx(q[0]), sy(q[1]), L * k, Math.max(3.2 * k, 1)); }
+    }
+  }
+  if (show.trains) for (const tr of trains) {
+    const l = tr.tr.p.line, N = l.cars, low = k < 0.06, dead = tr.kind === 'dead';
+    const U = Math.max(l.length * k, low ? 4 : 7), Wd = low ? 3 : Math.min(Math.max(3.2 * k, 3.5), 9);
+    { const X = sx(tr.x), Y = sy(tr.y); if (X < -U || X > W + U || Y < -U || Y > H + U) continue; }
+    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(tr.g, tr.s + (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
+    ctx.globalAlpha = tr.alpha; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i <= N; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    if (low) {
+      ctx.lineCap = 'round'; ctx.lineWidth = Wd + 1.6; ctx.strokeStyle = dead ? 'rgb(' + l.rgb + ')' : '#ffffff'; ctx.stroke();
+      ctx.lineWidth = dead ? Wd - 1 : Wd; ctx.strokeStyle = dead ? '#ffffff' : 'rgb(' + l.rgb + ')'; ctx.stroke(); ctx.globalAlpha = 1; continue;
+    }
+    ctx.lineCap = 'round'; ctx.lineWidth = Wd + 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+    ctx.lineWidth = Wd; ctx.strokeStyle = dead ? 'rgb(' + l.rgb + ')' : '#1b1d21'; ctx.stroke();
+    ctx.lineWidth = Wd - 2; ctx.strokeStyle = dead ? '#ffffff' : 'rgb(' + l.rgb + ')'; ctx.stroke();
+    if (U / N >= 11) for (let i = 1; i < N; i++) {
+      const dx = pts[i + 1][0] - pts[i - 1][0], dy = pts[i + 1][1] - pts[i - 1][1], L = Math.hypot(dx, dy) || 1, w = Wd / 2 - 1;
+      ctx.beginPath(); ctx.moveTo(pts[i][0] + dy / L * w, pts[i][1] - dx / L * w); ctx.lineTo(pts[i][0] - dy / L * w, pts[i][1] + dx / L * w); ctx.lineCap = 'butt'; ctx.lineWidth = 1.2; ctx.strokeStyle = '#1b1d21'; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], Math.max(Wd * 0.2, 1), 0, 7); ctx.fillStyle = '#ffffff'; ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtN = n => n.toLocaleString('en-GB');
+const sw = (rgb, cls) => '<span class="sw ' + (cls || '') + '" style="background:rgb(' + rgb + ');border-color:rgb(' + rgb + ')"></span>';
+el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Waiting at a terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
+el('busops').innerHTML = OPS.map((o, i) => '<tr><td>' + sw(o.rgb) + o.name + '</td><td class="n" id="op-' + i + '">0</td></tr>').join('');
+el('trainstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Standing at a terminus', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['park', 'Stabled in a depot', sw('151,161,171')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="ts-' + r[0] + '">0</td></tr>').join('');
+el('trains').innerHTML = RL.map((l, i) => '<tr><td>' + sw(l.rgb, 'line') + l.name + '</td><td class="n" id="rl-' + i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains out on each line, of ' + RL.map((l, li) => rdepots.reduce((s, d) => s + d.cap[li], 0)).map((n, li) => n + ' ' + RL[li].short).join(', ') + '.</td></tr>';
+el('depots').innerHTML = depots.map(d => '<tr><td>' + sw(OPS[d.op].rgb) + d.name + '</td><td class="n" id="dp-' + d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of those each depot sends out on its busiest day.</td></tr>'
+  + railYards.filter(Y => Y.n).map(Y => '<tr><td>' + Y.groups.map(g => sw(RL[g.li].rgb, 'line')).join('') + Y.d.name + '</td><td class="n" id="rd-' + Y.d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains stabled now, of those each depot has out at the busiest time.</td></tr>';
+el('credit').textContent = 'Built ' + D.meta.built + '. ' + D.meta.credit;
+const guessed = services.filter(s => s.guess).map(s => s.n);
+el('how').innerHTML = [
+  'Routes, stops and first and last buses at every stop are LTA\'s (via BusRouter SG, ' + D.meta.busData + '). Times between stops are LTA\'s published first-bus times differenced, from a community feed (' + D.meta.gtfsVersion + ').',
+  'LTA does not publish bus timetables, only how often each service runs. The free data has one average gap between buses per route, so the day is shaped by assumption: 15% more often than average in the peaks (6:30-8:30, 17:00-19:00 on weekdays), 5% less often between them, 15% less early and late. Saturdays and Sundays have no peaks.',
+  'Which bus works which trip is not published either. Buses stay on their service, take the next departure from the terminal they reach after at least ' + LAYOVER / 60 + ' minutes there, and go back to the depot when the next one they are needed for is more than ' + WAIT_MAX / 60 + ' minutes away (and the round trip fits). The depot for each service comes from its contract package; ' + (guessed.length ? guessed.join(', ') + ' are not listed, so they use the nearest depot.' : 'every service is listed.'),
+  'Buses running empty to and from their depot follow the roads, at 25 km/h: the shortest way, from the bus stop nearest the depot, along roads the bus routes use. Roads no bus route uses, and one-way streets, are not known.',
+  'Trains run at their line\'s average frequency, 5:30 to 23:30, with the same peak shaping, turning round at the ends. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
+  'Bus types (single or double deck) are not in the free data: every bus is drawn 12 m long.',
+  'Public holidays are not marked: they run as the day of the week they fall on.'
+].map(t => '<li>' + t + '</li>').join('');
+
+const spark = el('spark'), sctx = spark.getContext('2d');
+let sparkFor = -1;
+function drawSpark() {
+  const r = spark.getBoundingClientRect(), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (!w || !h) return;
+  if (spark.width !== w || spark.height !== h) { spark.width = w; spark.height = h; sparkFor = -1; }
+  const day = Math.floor(sim / DAY), plan = planFor(dayType(day)), prev = planFor(dayType(day - 1)), secs = (sim % DAY) / 1000;
+  const c = sctx; c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, r.width, r.height);
+  const vals = []; for (let i = 0; i < 288; i++) vals.push(plan.curve[i] + (prev.curve[i + 288] || 0));
+  const max = FLEET, X = i => i / 288 * r.width, Y = v => r.height - 12 - v / max * (r.height - 16);
+  c.fillStyle = '#eef0f3'; c.fillRect(0, Y(max), r.width, Y(0) - Y(max));
+  c.beginPath(); c.moveTo(0, Y(0)); vals.forEach((v, i) => c.lineTo(X(i), Y(v))); c.lineTo(r.width, Y(0)); c.closePath(); c.fillStyle = '#b9c2cf'; c.fill();
+  c.fillStyle = '#5b616b'; c.font = '10px system-ui, Segoe UI, Arial, sans-serif'; c.textBaseline = 'bottom';
+  for (const hr of [0, 6, 12, 18]) c.fillText(String(hr).padStart(2, '0'), X(hr * 12) + (hr ? -6 : 0), r.height);
+  c.textBaseline = 'top'; c.fillText('Fleet ' + fmtN(FLEET), 2, 1);
+  const cx = X(secs / 300); c.strokeStyle = '#d4006a'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(cx, Y(max)); c.lineTo(cx, Y(0)); c.stroke();
+}
+spark.addEventListener('click', e => { const r = spark.getBoundingClientRect(); setSim(Math.floor(sim / DAY) * DAY + Math.round((e.clientX - r.left) / r.width * 86400 / 30) * 30000); });
+
+let scrubbing = false;
+function updatePanel() {
+  const d = new Date(sim), secs = Math.floor((sim % DAY) / 1000);
+  el('clock').textContent = DAYS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()] + ' ' + hhmm(secs) + ':' + String(secs % 60).padStart(2, '0');
+  el('clockmode').textContent = (live ? 'Singapore time now' : speed === 0 ? 'Paused' : 'Simulated, ' + speed + '× speed') + ' · ' + DAYTYPE_NAMES[dayType(Math.floor(sim / DAY))] + ' service';
+  if (!scrubbing) el('time').value = secs;
+  if (document.activeElement !== el('date')) el('date').value = d.toISOString().slice(0, 10);
+  el('now').setAttribute('aria-pressed', live);
+  for (const b of el('speeds').children) b.setAttribute('aria-pressed', !live && +b.dataset.speed === speed);
+  const c = busCount, out = c.run + c.wait + c.dead;
+  el('bs-run').textContent = fmtN(c.run); el('bs-wait').textContent = fmtN(c.wait); el('bs-dead').textContent = fmtN(c.dead); el('bs-park').textContent = fmtN(Math.max(FLEET - out, 0));
+  OPS.forEach((o, i) => { el('op-' + i).textContent = fmtN(c.ops[i]); });
+  RL.forEach((l, i) => { el('rl-' + i).textContent = trains.perLine ? trains.perLine[i] : 0; });
+  const tc = trainCount; el('ts-run').textContent = tc.run; el('ts-wait').textContent = tc.wait; el('ts-dead').textContent = tc.dead; el('ts-park').textContent = Math.max(TRAIN_FLEET - tc.run - tc.wait - tc.dead, 0);
+  railYards.forEach(Y => { if (Y.n) el('rd-' + Y.d.i).textContent = Math.max(Y.n - tc.depotOut[Y.d.i].reduce((a, b) => a + b, 0), 0) + ' of ' + Y.n; });
+  depots.forEach(dp => { el('dp-' + dp.i).textContent = fmtN(Math.max(dp.cap - c.depotOut[dp.i], 0)) + ' of ' + fmtN(dp.cap); });
+  el('fleet').textContent = 'The model needs ' + fmtN(FLEET) + ' buses, from ' + depots.length + ' depots, for ' + fmtN(planFor(dayType(Math.floor(sim / DAY))).trips) + ' trips today. LTA\'s fleet is about 5,800, spares included. In service: by operator, above.';
+  drawSpark();
+}
+
+function setSim(ms) { live = false; sim = ms; }
+el('now').addEventListener('click', () => { live = true; speed = 1; });
+el('speeds').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; live = false; speed = +b.dataset.speed; });
+el('day').addEventListener('click', () => { setSim(Math.floor(sim / DAY) * DAY + 3 * 3600000); speed = 1200; });
+el('date').addEventListener('change', e => { const v = e.target.value.split('-').map(Number); if (v.length === 3 && v[0]) setSim(Date.UTC(v[0], v[1] - 1, v[2]) + sim % DAY); });
+el('time').addEventListener('input', e => { scrubbing = true; setSim(Math.floor(sim / DAY) * DAY + e.target.value * 1000); });
+el('time').addEventListener('change', () => { scrubbing = false; });
+for (const [id, keyName] of [['showBuses', 'buses'], ['showTrains', 'trains'], ['showRoads', 'roads']]) el(id).addEventListener('change', e => { show[keyName] = e.target.checked; baseDirty = true; });
+
+const tip = el('tip');
+let drag = null;
+canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); tip.style.display = 'none'; });
+canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('drag'); });
+canvas.addEventListener('pointercancel', () => { drag = null; canvas.classList.remove('drag'); });
+canvas.addEventListener('pointermove', e => {
+  if (drag) { view.cx -= (e.clientX - drag.x) / view.k; view.cy -= (e.clientY - drag.y) / view.k; drag = { x: e.clientX, y: e.clientY }; baseDirty = true; return; }
+  showTip(e.clientX, e.clientY);
+});
+canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+canvas.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
+canvas.addEventListener('dblclick', e => zoomAt(e.clientX, e.clientY, 2));
+el('zin').addEventListener('click', () => zoomAt(W / 2, H / 2, 1.5));
+el('zout').addEventListener('click', () => zoomAt(W / 2, H / 2, 1 / 1.5));
+el('zfit').addEventListener('click', fit);
+window.addEventListener('resize', () => { const had = W && H; resize(); if (!had) fit(); });
+
+const dest = p => { const a = stops[p.s[0]], b = stops[p.s[p.s.length - 1]]; return a === b || a.name === b.name ? 'loop from ' + a.name : 'to ' + b.name; };
+function describeBus(b) {
+  const tr = b.sg.trip, p = tr.p, svc = p.svc, op = OPS[b.bus.op].name, at = i => hhmm(tr.start + p.t[i]);
+  const head = '<b>Bus ' + svc.n + '</b> ' + dest(p) + '<br>' + op + ', ' + b.bus.depot.name;
+  if (b.sg.k === OUT) return '<b>Bus ' + svc.n + '</b>, not in service<br>Out of ' + b.bus.depot.name + ' for the ' + hhmm(tr.start) + ' from ' + stops[p.s[0]].name;
+  if (b.sg.k === IN) return '<b>Bus ' + svc.n + '</b>, not in service<br>Back to ' + b.bus.depot.name + ' after its ' + hhmm(tr.start) + ' trip';
+  if (b.sg.k === WAIT) return head + '<br>Waiting at ' + stops[p.s[0]].name + ', departs ' + hhmm(tr.start);
+  const nx = b.h + 1, last = p.s.length - 1;
+  if (b.moving) return head + '<br>Next stop ' + stops[p.s[nx]].name + ' ' + at(nx);
+  if (nx >= last) return head + '<br>At ' + stops[p.s[last]].name + ', terminating';
+  return head + '<br>At ' + stops[p.s[nx]].name + ', departs ' + at(nx);
+}
+function describeTrain(t) {
+  const p = t.tr.p, name = i => rstations[p.s[i]].name, at = i => hhmm(t.tr.start + p.t[i]), last = p.s.length - 1;
+  if (t.kind === 'dead') return '<b>' + p.line.name + '</b>, not in service<br>' + (t.home ? 'Back to ' + t.tr.dep.name + ' after arriving at ' + name(last) + ' ' + at(last) : 'Out of ' + t.tr.dep.name + ' for the ' + at(0) + ' from ' + name(0));
+  const head = '<b>' + p.line.name + '</b> ' + (p.loop ? 'loop from ' + name(0) : 'to ' + name(last)) + '<br>' + p.line.cars + (p.line.cars === 1 ? ' car' : ' cars');
+  if (t.state === 'waiting') return head + '<br>At ' + name(0) + ', departs ' + at(0);
+  if (t.state === 'done') return head + '<br>Arrived at ' + name(last) + ' ' + at(last);
+  if (t.moving) return head + '<br>Next stop ' + name(t.h + 1) + ' ' + at(t.h + 1);
+  return head + '<br>At ' + name(t.h + 1) + (t.h + 1 < last ? ', departs ' + at(t.h + 1) : '');
+}
+function showTip(mx, my) {
+  let html = '', bd = 12 * 12;
+  const near = (x, y) => { const dx = sx(x) - mx, dy = sy(y) - my; return dx * dx + dy * dy; };
+  if (show.trains) for (const t of trains) { const d2 = near(t.x, t.y); if (d2 < bd) { bd = d2; html = describeTrain(t); } }
+  if (show.buses) for (const b of buses) { const d2 = near(b.x, b.y); if (d2 < bd) { bd = d2; html = describeBus(b); } }
+  if (!html) for (const d of depots) { const y = yard(d), X = sx(d.x), Y = sy(d.y), hw = Math.max(y.w * view.k / 2, 6), hh = Math.max(y.h * view.k / 2, 6); if (Math.abs(mx - X) <= hw + 4 && Math.abs(my - Y) <= hh + 4) html = '<b>' + d.name + '</b><br>' + OPS[d.op].name + '<br>' + fmtN(Math.max(d.cap - busCount.depotOut[d.i], 0)) + ' of ' + fmtN(d.cap) + ' buses in the depot'; }
+  if (!html && show.trains) for (const Y of railYards) {
+    if (!Y.n) continue;
+    const X = sx(Y.cx), Yc = sy(Y.cy), hw = Math.max(Y.w * view.k / 2, 4), hh = Math.max(Y.h * view.k / 2, 4);
+    if (Math.abs(mx - X) <= hw + 4 && Math.abs(my - Yc) <= hh + 4) html = '<b>' + Y.d.name + '</b>' + Y.groups.map(g => '<br>' + RL[g.li].name + ': ' + Math.max(g.n - trainCount.depotOut[Y.d.i][g.li], 0) + ' of ' + g.n + ' trains stabled').join('');
+  }
+  if (!html && show.trains) { let sd = 8 * 8; for (const s of stationDots) { const d2 = near(s.x, s.y); if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b> station<br>' + s.ids.join(' · '); } } }
+  if (!html && view.k > 0.6) { let sd = 6 * 6; for (const s of stops) { const d2 = near(s.x, s.y); if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b><br>Bus stop ' + s.code; } } }
+  if (!html) { tip.style.display = 'none'; return; }
+  tip.innerHTML = html; tip.style.display = 'block';
+  tip.style.left = Math.min(mx + 14, W - tip.offsetWidth - 8) + 'px'; tip.style.top = Math.max(my - tip.offsetHeight - 10, 8) + 'px';
+}
+
+let lastFrame = 0, lastUi = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (exporting || !base.width || !base.height) return;
+  const dt = Math.min(lastFrame ? now - lastFrame : 0, 250); lastFrame = now;
+  if (live) sim = sgNow(); else sim += dt * speed;
+  if (baseDirty) drawBase();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(base, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buses = busesAt(sim); trains = trainsAt(sim);
+  drawDynamic();
+  if (now - lastUi > 250) { updatePanel(); lastUi = now; }
+}
+
+const EXPORTS = {
+  mp4: { w: 1920, h: 1080, fps: 30, seconds: 60, dot: 3, file: 'singapore-day.mp4', footer: 'Estimate, not live. Data: LTA, URA (data.gov.sg), © OpenStreetMap.' },
+  gifhq: { w: 1920, h: 1080, fps: 25, frames: 1440, dot: 3, file: 'singapore-24h.gif', bare: true, snap: true },
+  gif: { w: 1280, h: 720, fps: 12.5, seconds: 40, dot: 2.6, file: 'singapore-day.gif', footer: 'Estimate, not live. Data: LTA, URA, © OpenStreetMap.' }
+};
+const font = (px, weight) => (weight || '') + ' ' + px.toFixed(1) + 'px system-ui, Segoe UI, Arial, sans-serif';
+function roundRect(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function drawCaption(c, E, box, t) {
+  const u = E.w / 1920, day = Math.floor(t / DAY), secs = (t - day * DAY) / 1000, x = box.x + 28 * u, xr = box.x + box.w - 28 * u, cw = xr - x;
+  c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+  c.shadowColor = 'rgba(27,29,33,0.2)'; c.shadowBlur = 18 * u; c.fillStyle = '#ffffff'; roundRect(c, box.x, box.y, box.w, box.h, 14 * u); c.fill(); c.shadowColor = 'transparent'; c.shadowBlur = 0;
+  c.textBaseline = 'alphabetic'; c.textAlign = 'left';
+  let y = box.y + 56 * u;
+  c.fillStyle = '#1b1d21'; c.font = font(31 * u, '600'); c.fillText('Singapore buses and trains', x, y);
+  y += 112 * u; c.font = font(104 * u, '600'); c.fillText(hhmm(secs), x - 4 * u, y);
+  y += 26 * u; const ch = 70 * u, plan = planFor(dayType(day)), X = j => x + j / 288 * cw, Yv = v => y + ch - v / FLEET * ch;
+  c.fillStyle = '#eef0f3'; c.fillRect(x, y, cw, ch);
+  c.beginPath(); c.moveTo(x, y + ch); for (let j = 0; j < 288; j++) c.lineTo(X(j), Yv(plan.curve[36 + j] || 0)); c.lineTo(x + cw, y + ch); c.closePath(); c.fillStyle = '#b9c2cf'; c.fill();
+  const cur = X(((secs / 300 - 36) % 288 + 288) % 288); c.strokeStyle = '#d4006a'; c.lineWidth = 2.5 * u; c.beginPath(); c.moveTo(cur, y); c.lineTo(cur, y + ch); c.stroke();
+  y += ch + 48 * u;
+  const bc = busCount, tc = trainCount, row = (label, n) => {
+    c.fillStyle = '#3d424a'; c.font = font(Math.max(19 * u, 12), ''); c.fillText(label, x, y);
+    c.textAlign = 'right'; c.fillStyle = '#1b1d21'; c.font = font(Math.max(19 * u, 12), '600'); c.fillText(fmtN(n), xr, y); c.textAlign = 'left'; y += 31 * u;
+  };
+  const busOut = bc.run + bc.wait + bc.dead, trainOut = tc.run + tc.wait + tc.dead;
+  row('Buses out', busOut); row('Buses in depots', Math.max(FLEET - busOut, 0));
+  y += 8 * u; row('Trains out', trainOut); row('Trains in depots', Math.max(TRAIN_FLEET - trainOut, 0));
+  y += 14 * u; c.font = font(Math.max(16 * u, 11), '');
+  OPS.forEach((o, i) => { const kx = x + (i % 2) * cw / 2, ky = y + Math.floor(i / 2) * 27 * u; c.fillStyle = 'rgb(' + o.rgb + ')'; c.fillRect(kx, ky - 12 * u, 13 * u, 13 * u); c.fillStyle = '#3d424a'; c.fillText(o.name, kx + 21 * u, ky); });
+  c.font = font(Math.max(12.5 * u, 9.5), ''); c.fillStyle = '#6b717b'; c.fillText(E.footer, x, box.y + box.h - 22 * u);
+  c.restore();
+}
+
+function muxMp4(samples, avcC, E) {
+  const enc = new TextEncoder(), parts = [];
+  const u32 = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0); return b; }, u16 = n => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, n & 0xffff); return b; };
+  const cat = arr => { const n = arr.reduce((s, a) => s + a.length, 0), o = new Uint8Array(n); let p = 0; for (const a of arr) { o.set(a, p); p += a.length; } return o; };
+  const box = (type, ...kids) => { const body = cat(kids); return cat([u32(body.length + 8), enc.encode(type), body]); };
+  const full = (type, version, flags, ...kids) => box(type, u32((version << 24) | flags), ...kids);
+  const zeros = n => new Uint8Array(n);
+  const matrix = cat([0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000].map(u32));
+  const timescale = Math.round(E.fps * 1000), delta = 1000, n = samples.length, dur = n * delta;
+  const pts = samples.map(s => Math.round(s.ts * E.fps / 1e6) * delta), lag = Math.max(0, ...pts.map((p, i) => i * delta - p)), offsets = pts.map((p, i) => p + lag - i * delta);
+  const ctts = offsets.some(o => o) ? [full('ctts', 0, 0, u32(n), ...offsets.flatMap(o => [u32(1), u32(o)]))] : [];
+  const keys = samples.map((s, i) => s.key ? i + 1 : 0).filter(Boolean);
+  const name = cat([new Uint8Array([4]), enc.encode('H264'), zeros(27)]);
+  const avc1 = box('avc1', zeros(6), u16(1), u16(0), u16(0), zeros(12), u16(E.w), u16(E.h), u32(0x00480000), u32(0x00480000), u32(0), u16(1), name, u16(0x0018), u16(0xffff), box('avcC', avcC));
+  const moov = offset => box('moov',
+    full('mvhd', 0, 0, u32(0), u32(0), u32(timescale), u32(dur), u32(0x00010000), u16(0x0100), u16(0), zeros(8), matrix, zeros(24), u32(2)),
+    box('trak',
+      full('tkhd', 0, 3, u32(0), u32(0), u32(1), u32(0), u32(dur), zeros(8), u16(0), u16(0), u16(0), u16(0), matrix, u32(E.w * 65536), u32(E.h * 65536)),
+      box('mdia',
+        full('mdhd', 0, 0, u32(0), u32(0), u32(timescale), u32(dur), u16(0x55c4), u16(0)),
+        full('hdlr', 0, 0, u32(0), enc.encode('vide'), zeros(12), enc.encode('VideoHandler\0')),
+        box('minf',
+          full('vmhd', 0, 1, zeros(8)),
+          box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1))),
+          box('stbl',
+            full('stsd', 0, 0, u32(1), avc1),
+            full('stts', 0, 0, u32(1), u32(n), u32(delta)),
+            ...ctts,
+            full('stss', 0, 0, u32(keys.length), ...keys.map(u32)),
+            full('stsc', 0, 0, u32(1), u32(1), u32(n), u32(1)),
+            full('stsz', 0, 0, u32(0), u32(n), ...samples.map(s => u32(s.data.length))),
+            full('stco', 0, 0, u32(1), u32(offset)))))));
+  const ftyp = box('ftyp', enc.encode('isom'), u32(512), enc.encode('isomiso2avc1mp41'));
+  const size = samples.reduce((s, x) => s + x.data.length, 0), head = moov(0).length;
+  return new Blob([ftyp, moov(ftyp.length + head + 8), u32(size + 8), enc.encode('mdat'), ...samples.map(s => s.data)], { type: 'video/mp4' });
+}
+async function mp4Writer(E) {
+  if (typeof VideoEncoder === 'undefined') throw new Error('this browser cannot make video (no WebCodecs): use Chrome or Edge');
+  let codec = null; const base = { width: E.w, height: E.h, bitrate: 8e6, framerate: E.fps, avc: { format: 'avc' } };
+  for (const cdc of ['avc1.640028', 'avc1.4d0028', 'avc1.42e028']) if ((await VideoEncoder.isConfigSupported({ ...base, codec: cdc })).supported) { codec = cdc; break; }
+  if (!codec) throw new Error('this browser has no H.264 encoder');
+  const samples = []; let avcC = null, failed = null;
+  const enc = new VideoEncoder({
+    output: (chunk, meta) => {
+      const d = meta && meta.decoderConfig && meta.decoderConfig.description;
+      if (d && !avcC) avcC = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength)) : new Uint8Array(d.slice(0));
+      const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); samples.push({ data, key: chunk.type === 'key', ts: chunk.timestamp });
+    },
+    error: e => { failed = e; }
+  });
+  enc.configure({ ...base, codec });
+  return {
+    async add(canvas, i) {
+      if (failed) throw failed;
+      const vf = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / E.fps), duration: Math.round(1e6 / E.fps) });
+      enc.encode(vf, { keyFrame: i % Math.round(E.fps * 2) === 0 }); vf.close();
+      while (enc.encodeQueueSize > 6) await new Promise(r => setTimeout(r, 4));
+    },
+    async finish() { await enc.flush(); enc.close(); if (failed) throw failed; if (!avcC) throw new Error('the encoder gave no stream description'); return muxMp4(samples, avcC, E); }
+  };
+}
+
+function gifWriter(E, ctx2, sampleImages) {
+  const w = E.w, h = E.h, MAXC = Math.min(255, E.colours || 255), bits = Math.max(2, Math.ceil(Math.log2(MAXC + 1))), size = 1 << bits, TRANSPARENT = size - 1;
+  const pal = [], add = (r, g, b) => { if (pal.length < MAXC && !pal.some(p => (p[0] - r) ** 2 + (p[1] - g) ** 2 + (p[2] - b) ** 2 < 49)) pal.push([r, g, b]); };
+  const hex = s => [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
+  for (const o of OPS) add(...o.rgb.split(',').map(Number));
+  for (const l of RL) add(...l.rgb.split(',').map(Number));
+  for (const s of ['#ffffff', '#1b1d21', '#f3f1ea', '#c9dde8', '#d9d2c2', '#cdc5b3', '#e2ddd0', '#a8a08e', '#dde2e8', '#97a1ab', '#3c4048', '#5b616b', '#3d424a', '#6b717b', '#5a4a2a', '#3a4652', '#a39c8c', '#d4006a', '#b9c2cf', '#eef0f3', '#e4e7eb']) add(...hex(s));
+  const counts = new Uint32Array(32768);
+  for (const im of sampleImages) { const d = im.data; for (let i = 0; i < d.length; i += 4) counts[((d[i] >> 3) << 10) | ((d[i + 1] >> 3) << 5) | (d[i + 2] >> 3)]++; }
+  const order = []; for (let i = 0; i < 32768; i++) if (counts[i]) order.push(i);
+  order.sort((a, b) => counts[b] - counts[a]);
+  for (const i of order) { if (pal.length >= MAXC) break; add(((i >> 10) & 31) * 8 + 4, ((i >> 5) & 31) * 8 + 4, (i & 31) * 8 + 4); }
+  const real = pal.length;
+  while (pal.length < size) pal.push([0, 0, 0]);
+  const lut = new Uint8Array(32768);
+  for (let i = 0; i < 32768; i++) {
+    const r = ((i >> 10) & 31) * 8 + 4, g = ((i >> 5) & 31) * 8 + 4, b = (i & 31) * 8 + 4; let best = 0, bd = Infinity;
+    for (let j = 0; j < real; j++) { const p = pal[j], dd = 2 * (p[0] - r) ** 2 + 4 * (p[1] - g) ** 2 + 3 * (p[2] - b) ** 2; if (dd < bd) { bd = dd; best = j; } }
+    lut[i] = best;
+  }
+  let buf = new Uint8Array(1 << 22), n = 0;
+  const put = (...bytes) => { if (n + bytes.length > buf.length) { const nb = new Uint8Array(buf.length * 2); nb.set(buf); buf = nb; } for (const x of bytes) buf[n++] = x; };
+  const putArr = a => { while (n + a.length > buf.length) { const nb = new Uint8Array(buf.length * 2); nb.set(buf); buf = nb; } buf.set(a, n); n += a.length; };
+  const le = v => [v & 255, (v >> 8) & 255];
+  putArr(new TextEncoder().encode('GIF89a')); put(...le(w), ...le(h), 0x80 | ((bits - 1) << 4) | (bits - 1), 0, 0);
+  for (const p of pal) put(p[0], p[1], p[2]);
+  put(0x21, 0xff, 11, ...new TextEncoder().encode('NETSCAPE2.0'), 3, 1, 0, 0, 0);
+  const table = new Int16Array(1 << 20), stamp = new Int32Array(1 << 20); let gen = 1;
+  const block = new Uint8Array(1 << 22), CLEAR = 1 << bits, EOI = CLEAR + 1;
+  function lzw(idx) {
+    let p = 0, cur = 0, shift = 0, sz = bits + 1, next = CLEAR + 2; gen++;
+    const emit = code => { cur |= code << shift; shift += sz; while (shift >= 8) { block[p++] = cur & 255; cur >>>= 8; shift -= 8; } };
+    emit(CLEAR);
+    let prefix = idx[0];
+    for (let i = 1; i < idx.length; i++) {
+      const k = idx[i], key = (prefix << 8) | k;
+      if (stamp[key] === gen) { prefix = table[key]; continue; }
+      emit(prefix);
+      if (next === 4096) { emit(CLEAR); next = CLEAR + 2; sz = bits + 1; gen++; }
+      else { if (next >= (1 << sz)) sz++; table[key] = next++; stamp[key] = gen; }
+      prefix = k;
+    }
+    emit(prefix); emit(EOI); if (shift > 0) block[p++] = cur & 255;
+    put(bits);
+    for (let i = 0; i < p; i += 255) { const len = Math.min(255, p - i); put(len); putArr(block.subarray(i, i + len)); }
+    put(0);
+  }
+  let prev = null; const delay = Math.round(100 / E.fps);
+  return {
+    async add(canvas) {
+      const d = ctx2.getImageData(0, 0, w, h).data, idx = new Uint8Array(w * h);
+      for (let q = 0, i = 0; q < idx.length; q++, i += 4) idx[q] = lut[((d[i] >> 3) << 10) | ((d[i + 1] >> 3) << 5) | (d[i + 2] >> 3)];
+      let x0 = 0, y0 = 0, x1 = w - 1, y1 = h - 1;
+      if (prev) {
+        x0 = w; y0 = h; x1 = -1; y1 = -1;
+        for (let y = 0; y < h; y++) { const row = y * w; for (let x = 0; x < w; x++) if (idx[row + x] !== prev[row + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; y1 = y; } }
+        if (x1 < 0) { x0 = x1 = y0 = y1 = 0; }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1, sub = new Uint8Array(bw * bh);
+      for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) { const q = (y + y0) * w + x + x0; sub[y * bw + x] = prev && idx[q] === prev[q] ? TRANSPARENT : idx[q]; }
+      put(0x21, 0xf9, 4, (1 << 2) | (prev ? 1 : 0), ...le(delay), TRANSPARENT, 0);
+      put(0x2c, ...le(x0), ...le(y0), ...le(bw), ...le(bh), 0);
+      lzw(sub);
+      prev = idx;
+    },
+    async finish() { put(0x3b); return new Blob([buf.subarray(0, n)], { type: 'image/gif' }); }
+  };
+}
+
+async function makeExport(kind) {
+  if (exporting) return;
+  const E = EXPORTS[kind], u = E.w / 1920, N = E.frames || Math.round(E.fps * E.seconds), state = el('exstate'), isGif = kind !== 'mp4';
+  const fc = document.createElement('canvas'); fc.width = E.w; fc.height = E.h;
+  const fctx = fc.getContext('2d', { willReadFrequently: isGif }), fbase = document.createElement('canvas'); fbase.width = E.w; fbase.height = E.h;
+  const box = E.bare ? null : { x: 28 * u, y: 28 * u, w: 440 * u, h: 640 * u }, right = box ? box.x + box.w : 0;
+  let k2, cx2, cy2;
+  if (el('exview').checked) {
+    const inset = W > 760 ? panel.offsetWidth + 24 : 0, wx = view.cx + inset / (2 * view.k);
+    k2 = view.k * (E.w - right) / Math.max(W - inset, 1); cx2 = wx - right / (2 * k2); cy2 = view.cy;
+  } else {
+    const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }, m = 24 * u;
+    for (const s of stops.concat(rstations, depots)) { b.x0 = Math.min(b.x0, s.x - 900); b.x1 = Math.max(b.x1, s.x + 900); b.y0 = Math.min(b.y0, s.y - 900); b.y1 = Math.max(b.y1, s.y + 900); }
+    k2 = Math.min((E.w - right - 2 * m) / (b.x1 - b.x0), (E.h - 2 * m) / (b.y1 - b.y0));
+    cx2 = (b.x0 + b.x1) / 2 - right / (2 * k2); cy2 = (b.y0 + b.y1) / 2;
+  }
+  const saved = { W, H, dpr, ctx, base, bctx, keepClear, cx: view.cx, cy: view.cy, k: view.k };
+  const day = Math.floor(sim / DAY), start = day * DAY + 3 * 3600000, began = performance.now();
+  exporting = true; for (const b of [el('mkmp4'), el('mkgif'), el('mkgifhq'), el('mkdepots'), el('mkdepotsgif')]) b.disabled = true;
+  let message;
+  try {
+    W = E.w; H = E.h; dpr = 1; ctx = fctx; base = fbase; bctx = fbase.getContext('2d'); view.cx = cx2; view.cy = cy2; view.k = k2; DOT = E.dot; SNAP = !!E.snap;
+    keepClear = () => box ? [{ x0: box.x - 6, y0: box.y - 6, x1: right + 10, y1: box.y + box.h + 6 }] : [];
+    drawBase();
+    const render = t => { buses = busesAt(t); trains = trainsAt(t); fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.drawImage(fbase, 0, 0); drawDynamic(); if (box) drawCaption(fctx, E, box, t); };
+    let writer;
+    if (isGif) {
+      const samples = []; for (const hr of E.bare ? [3, 5.5, 6.5, 8, 12, 18, 23, 25] : [3, 8, 18]) { render(day * DAY + hr * 3600000); samples.push(fctx.getImageData(0, 0, E.w, E.h)); }
+      writer = gifWriter(E, fctx, samples);
+    } else writer = await mp4Writer(E);
+    for (let i = 0; i < N; i++) {
+      render(start + i * DAY / N);
+      await writer.add(fc, i);
+      if (i % 15 === 0) { state.textContent = 'Drawing frame ' + (i + 1) + ' of ' + N + '…'; await new Promise(r => setTimeout(r, 0)); }
+    }
+    state.textContent = 'Finishing…';
+    const blob = await writer.finish(), mb = (blob.size / 1048576).toFixed(1), took = Math.round((performance.now() - began) / 1000);
+    let saved2 = false;
+    try { saved2 = (await fetch('exports/' + E.file, { method: 'PUT', body: blob })).ok; } catch (e) {}
+    if (!saved2) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = E.file; document.body.appendChild(a); a.click(); a.remove(); }
+    message = (saved2 ? 'Saved as exports\\' + E.file : 'Downloaded as ' + E.file) + ' (' + mb + ' MB, ' + N + ' frames, ' + took + ' s to make).';
+  } catch (e) {
+    message = 'Could not make it: ' + (e && e.message ? e.message : e);
+  } finally {
+    W = saved.W; H = saved.H; dpr = saved.dpr; ctx = saved.ctx; base = saved.base; bctx = saved.bctx; keepClear = saved.keepClear; DOT = 2.2; SNAP = false;
+    view.cx = saved.cx; view.cy = saved.cy; view.k = saved.k; baseDirty = true; exporting = false;
+    for (const b of [el('mkmp4'), el('mkgif'), el('mkgifhq'), el('mkdepots'), el('mkdepotsgif')]) b.disabled = false;
+  }
+  if (message) state.textContent = message;
+}
+el('mkmp4').addEventListener('click', () => makeExport('mp4'));
+el('mkgif').addEventListener('click', () => makeExport('gif'));
+el('mkgifhq').addEventListener('click', () => makeExport('gifhq'));
+
+const DEPOT_EXPORTS = {
+  mp4: { w: 1920, h: 1080, fps: 30, seconds: 60, dot: 3, file: 'singapore-depots.mp4' },
+  gif: { w: 1280, h: 720, fps: 15, frames: 480, dot: 2, colours: 127, file: 'singapore-24h-email.gif', gif: true, compact: true, snap: true }
+};
+const depotSites = () => depots.map(d => { const y = yard(d); return { d, x: d.x, y: d.y, w: y.w + 12, h: y.h + 12 }; }).sort((a, b) => a.x - b.x);
+async function makeDepotExport(kind) {
+  if (exporting) return;
+  const E = DEPOT_EXPORTS[kind], u = E.w / 1920, px2 = (n, min) => Math.max(n * u, min || 0);
+  const N = E.frames || Math.round(E.fps * E.seconds), state = el('exstate'), M = 16 * u, G = 10 * u, cols = 3, rows = 5, cellW = 220 * u;
+  const sites = depotSites(), cellH = (E.h - 2 * M - (rows - 1) * G) / rows, side = { x: E.w - 2 * M - cols * cellW - (cols - 1) * G, w: 2 * M + cols * cellW + (cols - 1) * G };
+  const head = px2(28, 19), mapArea = E.compact ? { x0: 12 * u, y0: 12 * u, x1: side.x - 12 * u, y1: E.h - 30 * u } : { x0: 16 * u, y0: 120 * u, x1: side.x - 16 * u, y1: 1040 * u };
+  const cell = i => ({ x: side.x + M + (i % cols) * (cellW + G), y: M + Math.floor(i / cols) * (cellH + G), w: cellW, h: cellH });
+  const fc = document.createElement('canvas'); fc.width = E.w; fc.height = E.h; const fctx = fc.getContext('2d', { willReadFrequently: !!E.gif });
+  const clockBox = { x: 18 * u, y: 18 * u, w: px2(150, 92), h: px2(64, 40) };
+  const saved = { W, H, dpr, ctx, base, bctx, keepClear, cx: view.cx, cy: view.cy, k: view.k };
+  const day = Math.floor(sim / DAY), start = day * DAY + 3 * 3600000, began = performance.now();
+  const buttons = [el('mkmp4'), el('mkgif'), el('mkgifhq'), el('mkdepots'), el('mkdepotsgif')];
+  exporting = true; for (const b of buttons) b.disabled = true;
+  let message;
+  try {
+    dpr = 1; ctx = fctx; DOT = E.dot; SNAP = !!E.snap; trainYards = false;
+    const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    for (const s of stops.concat(depots)) { b.x0 = Math.min(b.x0, s.x - 900); b.x1 = Math.max(b.x1, s.x + 900); b.y0 = Math.min(b.y0, s.y - 900); b.y1 = Math.max(b.y1, s.y + 900); }
+    const mainK = Math.min((mapArea.x1 - mapArea.x0) / (b.x1 - b.x0), (mapArea.y1 - mapArea.y0) / (b.y1 - b.y0));
+    const mainView = { W: E.w, H: E.h, k: mainK, cx: (b.x0 + b.x1) / 2 - ((mapArea.x0 + mapArea.x1) / 2 - E.w / 2) / mainK, cy: (b.y0 + b.y1) / 2 - ((mapArea.y0 + mapArea.y1) / 2 - E.h / 2) / mainK };
+    const use = v => { W = v.W; H = v.H; view.k = v.k; view.cx = v.cx; view.cy = v.cy; };
+    use(mainView); base = document.createElement('canvas'); base.width = E.w; base.height = E.h; bctx = base.getContext('2d');
+    keepClear = () => [{ x0: side.x - 4, y0: 0, x1: E.w, y1: E.h }].concat(E.compact
+      ? [{ x0: clockBox.x - 4, y0: clockBox.y - 4, x1: clockBox.x + clockBox.w + 4, y1: clockBox.y + clockBox.h + 4 }, { x0: 0, y0: E.h - 26 * u, x1: side.x, y1: E.h }]
+      : [{ x0: 0, y0: 0, x1: side.x, y1: 115 * u }, { x0: 0, y0: 1045 * u, x1: side.x, y1: E.h }]);
+    depotLabels = false; drawBase(); depotLabels = true; const mainBase = base;
+    const insets = sites.map((s, i) => {
+      const slot = cell(i), extW = Math.max(s.w + 200, 360), extH = Math.max(s.h + 130, 220);
+      const k = Math.min(slot.w / extW, (slot.h - head) / extH, 1.4), v = { W: slot.w, H: slot.h, k, cx: s.x, cy: s.y - (head / 2) / k };
+      use(v); base = document.createElement('canvas'); base.width = Math.ceil(slot.w); base.height = Math.ceil(slot.h); bctx = base.getContext('2d');
+      keepClear = () => [{ x0: 0, y0: 0, x1: slot.w, y1: head + 2 }];
+      depotLabels = false; drawBase(); depotLabels = true;
+      return { s, n: i + 1, slot, v, base };
+    });
+    const keyBox = (() => { const a = cell(sites.length), z = cell(cols * rows - 1); return { x: a.x, y: a.y, w: z.x + z.w - a.x, h: a.h }; })();
+    const render = t => {
+      buses = busesAt(t); trains = trainsAt(t);
+      const c = fctx, secs = (t - day * DAY) / 1000, bc = busCount;
+      use(mainView); c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(mainBase, 0, 0);
+      c.save(); c.beginPath(); c.rect(0, 0, side.x, E.h); c.clip(); drawDynamic(); c.restore();
+      const r0 = px2(10, 7);
+      for (const it of insets) {
+        const X = sx(it.s.x), Y = sy(it.s.y) - r0 - 3 * u;
+        c.beginPath(); c.arc(X, Y, r0, 0, 7); c.fillStyle = '#1b1d21'; c.fill(); c.lineWidth = px2(2, 1.5); c.strokeStyle = '#ffffff'; c.stroke();
+        c.fillStyle = '#ffffff'; c.font = font(px2(11, 8.5), '700'); c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(it.n), X, Y + 0.5);
+      }
+      c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+      if (E.compact) {
+        c.fillStyle = 'rgba(255,255,255,0.92)'; roundRect(c, clockBox.x, clockBox.y, clockBox.w, clockBox.h, px2(8, 5)); c.fill();
+        c.fillStyle = '#1b1d21'; c.font = font(px2(44, 27), '600'); c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText(hhmm(secs), clockBox.x + clockBox.w / 2, clockBox.y + clockBox.h / 2 + 1); c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+        c.fillStyle = '#6b717b'; c.font = font(px2(12, 9.5), ''); c.fillText('Estimate, not live · Data: LTA, URA, © OpenStreetMap', 14 * u, E.h - 10 * u);
+      } else {
+        c.fillStyle = '#1b1d21'; c.font = font(36 * u, '600'); c.fillText('Singapore bus depots', 28 * u, 70 * u);
+        c.textAlign = 'right'; c.font = font(80 * u, '600'); c.fillText(hhmm(secs), side.x - 24 * u, 88 * u); c.textAlign = 'left';
+        c.fillStyle = '#6b717b'; c.font = font(12.5 * u, ''); c.fillText('Estimate, not live. Data: LTA, URA (data.gov.sg).', 28 * u, 1064 * u);
+      }
+      c.fillStyle = '#e4e7eb'; c.fillRect(side.x, 0, side.w, E.h);
+      for (const it of insets) {
+        const { slot, s } = it, d = s.d, inB = Math.max(d.cap - bc.depotOut[d.i], 0), hm = head / 2;
+        use(it.v); c.save(); c.translate(slot.x, slot.y); c.beginPath(); c.rect(0, 0, slot.w, slot.h); c.clip();
+        c.drawImage(it.base, 0, 0); drawDynamic(); c.restore();
+        c.fillStyle = '#1b1d21'; c.fillRect(slot.x, slot.y, slot.w, head);
+        const rr = px2(9, 6.5), nx = slot.x + rr + px2(5, 3);
+        c.beginPath(); c.arc(nx, slot.y + hm - 1, rr, 0, 7); c.fillStyle = '#ffffff'; c.fill();
+        c.fillStyle = '#1b1d21'; c.font = font(px2(11, 8), '700'); c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(it.n), nx, slot.y + hm - 0.5);
+        c.textAlign = 'left'; c.fillStyle = '#ffffff'; c.font = font(px2(13, 9.5), '600');
+        const count = inB + '/' + d.cap, countW = c.measureText(count).width, x0 = nx + rr + px2(5, 3);
+        let name = d.name.replace(/ Integrated Depot$| Bus Depot$| Depot$/, ''); while (c.measureText(name).width > slot.x + slot.w - px2(8, 4) - countW - px2(6, 4) - x0 && name.length > 4) name = name.slice(0, -2) + '…';
+        c.fillText(name, x0, slot.y + hm - 0.5);
+        c.textAlign = 'right'; c.fillText(count, slot.x + slot.w - px2(8, 4), slot.y + hm - 0.5); c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+        const bh2 = px2(3, 2); c.fillStyle = '#3d424a'; c.fillRect(slot.x + 1, slot.y + head - bh2, slot.w - 2, bh2);
+        c.fillStyle = 'rgb(' + OPS[d.op].rgb + ')'; c.fillRect(slot.x + 1, slot.y + head - bh2, (slot.w - 2) * inB / Math.max(d.cap, 1), bh2);
+        c.strokeStyle = '#1b1d21'; c.lineWidth = px2(1.5, 1); c.strokeRect(slot.x + 0.75, slot.y + 0.75, slot.w - 1.5, slot.h - 1.5);
+      }
+      const k = keyBox, sw2 = px2(15, 10); c.fillStyle = '#ffffff'; c.fillRect(k.x, k.y, k.w, k.h); c.strokeStyle = '#1b1d21'; c.lineWidth = px2(1.5, 1); c.strokeRect(k.x + 0.75, k.y + 0.75, k.w - 1.5, k.h - 1.5);
+      c.font = font(px2(15, 10.5), ''); const items = OPS.map(o => [o.name, 'rgb(' + o.rgb + ')']).concat([['Not in service', null]]);
+      items.forEach((it, i) => {
+        const kx = k.x + 22 * u + (i % 2) * (k.w / 2 - 10 * u), ky = k.y + 44 * u + Math.floor(i / 2) * 44 * u;
+        if (it[1]) { c.fillStyle = it[1]; c.fillRect(kx, ky - sw2 + 2, sw2, sw2); } else { c.fillStyle = '#ffffff'; c.fillRect(kx, ky - sw2 + 2, sw2, sw2); c.strokeStyle = '#3c4048'; c.lineWidth = px2(2, 1.5); c.strokeRect(kx + 1, ky - sw2 + 3, sw2 - 2, sw2 - 2); }
+        c.fillStyle = '#3d424a'; c.fillText(it[0], kx + sw2 + px2(9, 6), ky);
+      });
+    };
+    let writer;
+    if (E.gif) {
+      const samples = []; for (const hr of [3, 5.5, 6.5, 8, 12, 18, 23, 25]) { render(day * DAY + hr * 3600000); samples.push(fctx.getImageData(0, 0, E.w, E.h)); }
+      writer = gifWriter(E, fctx, samples);
+    } else writer = await mp4Writer(E);
+    for (let i = 0; i < N; i++) {
+      render(start + i * DAY / N);
+      await writer.add(fc, i);
+      if (i % 15 === 0) { state.textContent = 'Drawing frame ' + (i + 1) + ' of ' + N + '…'; await new Promise(r => setTimeout(r, 0)); }
+    }
+    state.textContent = 'Finishing…';
+    const blob = await writer.finish(), mb = (blob.size / 1048576).toFixed(1), took = Math.round((performance.now() - began) / 1000);
+    let ok = false;
+    try { ok = (await fetch('exports/' + E.file, { method: 'PUT', body: blob })).ok; } catch (e) {}
+    if (!ok) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = E.file; document.body.appendChild(a); a.click(); a.remove(); }
+    message = (ok ? 'Saved as exports\\' + E.file : 'Downloaded as ' + E.file) + ' (' + mb + ' MB, ' + N + ' frames, ' + took + ' s to make).';
+  } catch (e) {
+    message = 'Could not make it: ' + (e && e.message ? e.message : e);
+  } finally {
+    W = saved.W; H = saved.H; dpr = saved.dpr; ctx = saved.ctx; base = saved.base; bctx = saved.bctx; keepClear = saved.keepClear; trainYards = true;
+    view.cx = saved.cx; view.cy = saved.cy; view.k = saved.k; baseDirty = true; exporting = false; DOT = 2.2; SNAP = false;
+    for (const b of buttons) b.disabled = false;
+  }
+  if (message) state.textContent = message;
+}
+el('mkdepots').addEventListener('click', () => makeDepotExport('mp4'));
+el('mkdepotsgif').addEventListener('click', () => makeDepotExport('gif'));
+
+resize(); fit(); requestAnimationFrame(frame);
+})();
+</script>
+</body></html>
