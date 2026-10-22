@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glasgow Subway and trains</title>
+<link rel="stylesheet" href="../city.css">
+</head>
+<body>
+<canvas id="map">Map with the timetabled position of every tram and train.</canvas>
+<aside id="panel" class="collapsed">
+  <p class="small"><a href="../maps/">All maps</a></p>
+  <div class="top keep"><h1 id="title"></h1><button type="button" id="more" aria-expanded="false">More</button></div>
+  <p class="mode keep">Timetable estimate, not live positions.</p>
+  <div id="clock" class="keep">--:--:--</div>
+  <div id="clockmode"></div>
+  <div class="row"><input type="date" id="date" aria-label="Date"><button id="now" type="button">Now</button></div>
+  <input type="range" id="time" min="0" max="86399" step="30" aria-label="Time of day">
+  <div class="row" id="speeds" role="group" aria-label="Playback speed">
+    <button type="button" data-speed="0">Pause</button>
+    <button type="button" data-speed="1">1&times;</button>
+    <button type="button" data-speed="60">60&times;</button>
+    <button type="button" data-speed="300">300&times;</button>
+    <button type="button" data-speed="1200">1200&times;</button>
+  </div>
+  <div class="row"><button type="button" id="day">Play the whole day from 3am</button></div>
+  <div id="legend"></div>
+  <p class="small" id="borrowed"></p>
+  <div class="sect"><ul class="small" id="notes"></ul><p class="credit" id="credit"></p></div>
+</aside>
+<div id="zoom"><button type="button" id="zin" aria-label="Zoom in">+</button><button type="button" id="zout" aria-label="Zoom out">&minus;</button><button type="button" id="zfit">Fit</button></div>
+<div id="tip" role="status"></div>
+<script src="data.js"></script>
+<script src="../city.js"></script>
+</body></html>

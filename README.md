@@ -1,12 +1,15 @@
-﻿# Singapore buses and trains
+# Transit maps
 
-Every public bus and MRT/LRT train in Singapore through one day. A timetable estimate, not live positions.
+Every bus, tram and train through the day in Singapore, Greater Manchester and Glasgow. Timetable estimates, not live positions.
 
 ## Data
 
-- Bus stops, routes and first/last bus times: LTA DataMall, via BusRouter SG
-- Running times and average frequencies: singapore-gtfs (Vorld)
-- Land outline: URA Master Plan 2019 Planning Area Boundary, data.gov.sg
-- MRT and LRT lines: sgraildata, © OpenStreetMap contributors (ODbL)
+- Singapore buses: LTA DataMall via BusRouter SG; running times and frequencies from singapore-gtfs (Vorld)
+- Singapore land: URA Master Plan 2019 Planning Area Boundary, data.gov.sg
+- Singapore depots and interchange berths: Wikipedia
+- Metrolink: Transport for Greater Manchester timetable (ODbL); Manchester roads from TfGM bus routes
+- Glasgow Subway: estimated from SPT's published hours and frequencies; stations from NaPTAN (OGL)
+- Regional rail: National Rail timetable, via planarnetwork/gb-transit
+- Water, track, MRT lines and Glasgow roads: Â© OpenStreetMap contributors (ODbL)
 
 Contains information from LTA DataMall and data.gov.sg made available under the Singapore Open Data Licence version 1.0.
