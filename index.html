@@ -298,6 +298,13 @@ for (const [p, c] of [[0, 0], [0, 1], [1, 2], [2, 0]]) for (let i = 0; i < 288; 
   for (const list of parkedIn(plans[p], plans[c], i * 300)) for (const r of list) away[r[3]]++;
   for (const d of depots) d.slots = Math.max(d.slots || 0, d.cap - away[d.i]);
 }
+for (const I of ICH) I.room = I.slots;
+for (const pl of plans) {
+  const ev = ICH.map(() => []);
+  for (const b of pl.buses) for (const sg of b.segs) if (sg.k === WAIT) { const I = ichAt.get(sg.trip.p.s[0]); if (I) ev[I.i].push([sg.t0, 1], [sg.t1, -1]); }
+  ev.forEach((list, i) => { list.sort((a, b) => a[0] - b[0] || a[1] - b[1]); let n = 0; for (const e of list) { n += e[1]; if (n > ICH[i].room) ICH[i].room = n; } });
+}
+const ICH_NIGHT = '168,83,11', ICH_WAIT = '239,176,79';
 
 const railPlans = new Map();
 function railFor(dt) {
@@ -376,11 +383,11 @@ function progress(p, tau, dwell) {
   return { s: p.d[lo] + f * (p.d[lo + 1] - p.d[lo]), h: lo, moving };
 }
 
-let busCount = null, ichParked = ICH.map(() => []);
+let busCount = null, ichParked = ICH.map(() => []), ichWaiting = ICH.map(() => []);
 function busesAt(sim) {
   const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [];
-  const count = { run: 0, dead: 0, wait: 0, ich: 0, ops: OPS.map(() => 0), depotOut: depots.map(() => 0) };
-  ichParked = parkedAt(day, secs);
+  const count = { run: 0, dead: 0, wait: 0, waitIch: 0, ich: 0, ops: OPS.map(() => 0), depotOut: depots.map(() => 0) };
+  ichParked = parkedAt(day, secs); ichWaiting = ICH.map(() => []);
   for (const list of ichParked) for (const r of list) { count.ich++; count.depotOut[r[3]]++; }
   for (const [dk, t] of [[day - 1, secs + 86400], [day, secs]]) {
     for (const bus of planFor(dayType(dk)).buses) {
@@ -397,8 +404,14 @@ function busesAt(sim) {
         continue;
       }
       if (sg.k === WAIT) {
-        p = sg.trip.p; s = p.d[0] - 14 - (bus.slot % 4) * 15;
-        const pt = pointAt(p.g, s); x = pt.x; y = pt.y; a = pt.a; g = p.g; count.wait++;
+        p = sg.trip.p; s = p.d[0] - 14 - (bus.slot % 4) * 15; count.wait++;
+        const I = ichAt.get(p.s[0]), Y = I && yard(I), bay = I ? ichParked[I.i].length + ichWaiting[I.i].length : 0;
+        if (I && bay < Y.cols * Y.rows) {
+          const c = bay % Y.cols, r = Y.rows - 1 - Math.floor(bay / Y.cols);
+          const v = { bus, sg, t, x: I.x - Y.w / 2 + c * 4 + 0.7 + BUS.width / 2, y: I.y - Y.h / 2 + r * 15 + 1.5 + BUS.length / 2, a: Math.PI / 2, s, p, g: p.g, dir: 1, inYard: I };
+          ichWaiting[I.i].push(v); count.waitIch++; out.push(v); continue;
+        }
+        const pt = pointAt(p.g, s); x = pt.x; y = pt.y; a = pt.a; g = p.g;
       } else {
         let f = (t - sg.t0) / Math.max(sg.t1 - sg.t0, 1); f = f * f * (3 - 2 * f);
         const R = sg.run, L = R.g.cum[R.g.n - 1]; g = R.g; dir = R.rev ? -1 : 1; s = R.rev ? L * (1 - f) : L * f;
@@ -490,7 +503,7 @@ const stationDots = (() => {
   rstations.forEach(s => { const k = s.name; if (!m.has(k)) m.set(k, { name: s.name, ids: [], x: 0, y: 0, n: 0 }); const o = m.get(k); o.ids.push(s.id); o.x += s.x; o.y += s.y; o.n++; });
   return [...m.values()].map(o => ({ name: o.name, ids: o.ids, x: o.x / o.n, y: o.y / o.n }));
 })();
-const yard = d => d.yard || (d.yard = (() => { const cols = Math.max(1, Math.min(d.slots, Math.max(12, Math.round(Math.sqrt(6 * d.slots))))), rows = Math.max(1, Math.ceil(d.slots / cols)); return { cols, rows, w: cols * 4, h: rows * 15 }; })());
+const yard = d => d.yard || (d.yard = (() => { const n = d.room || d.slots, cols = Math.max(1, Math.min(n, Math.max(12, Math.round(Math.sqrt(6 * n))))), rows = Math.max(1, Math.ceil(n / cols)); return { cols, rows, w: cols * 4, h: rows * 15 }; })());
 const railYards = rdepots.map(d => {
   const perCol = 20, groups = d.lines.filter(li => d.cap[li] > 0).map(li => ({ li, n: d.cap[li], cols: Math.ceil(d.cap[li] / perCol), len: RL[li].length + 10, xoff: 0 }));
   let w = 0; for (const g of groups) { g.xoff = w; w += g.cols * g.len; }
@@ -516,6 +529,18 @@ function drawBase() {
   }
   c.fillStyle = '#e2ddd0'; c.strokeStyle = '#a8a08e'; c.lineWidth = 1 / k;
   for (const d of depots.concat(ICH)) { const y = yard(d); c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); }
+  if (k * 4 >= 1.2) {
+    c.save(); c.lineWidth = 0.7 / k;
+    for (const I of ICH) {
+      const y = yard(I), x0 = I.x - y.w / 2, y0 = I.y - y.h / 2;
+      for (let i = 0; i < Math.min(I.room, y.cols * y.rows); i++) {
+        const cc = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols);
+        c.strokeStyle = i < I.slots ? '#c9c1ae' : '#7d7563'; c.setLineDash(i < I.slots ? [] : [1.6 / k, 1.2 / k]);
+        c.strokeRect(x0 + cc * 4 + 0.7, y0 + r * 15 + 1.5, BUS.width, BUS.length);
+      }
+    }
+    c.restore();
+  }
   if (show.trains) {
     c.fillStyle = '#dde2e8'; c.strokeStyle = '#97a1ab';
     if (trainYards) for (const Y of railYards) if (Y.n) { c.fillRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); c.strokeRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); }
@@ -558,18 +583,17 @@ function drawYard(d, n, rgbOf) {
   n = Math.min(n, y.cols * y.rows);
   if (!n || sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) return;
   if (k * 4 < 1.2) {
-    const rows = Math.ceil(n / y.cols);
-    ctx.fillStyle = rgba(rgbOf(0), 0.85); ctx.fillRect(sx(x0), sy(y0 + y.h - rows * 15), Math.max(y.w * k, 2), Math.max(rows * 15 * k, 1.5));
+    for (let r = 0; r * y.cols < n; r++) { const w = Math.min(y.cols, n - r * y.cols) / y.cols; ctx.fillStyle = rgba(rgbOf(r * y.cols), 0.9); ctx.fillRect(sx(x0), sy(y0 + y.h - (r + 1) * 15), Math.max(y.w * w * k, 1.5), Math.max(15 * k, 1)); }
     return;
   }
-  for (let i = 0; i < n; i++) { const c = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillStyle = rgba(rgbOf(i), 0.85); ctx.fillRect(sx(x0 + c * 4 + 0.7), sy(y0 + r * 15 + 1.5), BUS.width * k, BUS.length * k); }
+  for (let i = 0; i < n; i++) { const c = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillStyle = rgba(rgbOf(i), 0.9); ctx.fillRect(sx(x0 + c * 4 + 0.7), sy(y0 + r * 15 + 1.5), BUS.width * k, BUS.length * k); }
 }
 function drawDynamic() {
   const k = view.k;
   ctx.lineJoin = 'round';
   if (show.buses) {
     for (const d of depots) drawYard(d, Math.max(0, d.cap - busCount.depotOut[d.i]), () => OPS[d.op].rgb);
-    for (const I of ICH) drawYard(I, ichParked[I.i].length, i => OPS[ichParked[I.i][i][2]].rgb);
+    for (const I of ICH) { const night = ichParked[I.i].length; drawYard(I, night + ichWaiting[I.i].length, i => i < night ? ICH_NIGHT : ICH_WAIT); }
   }
   if (show.buses) {
     const len = Math.max(BUS.length * k, 0), wid = Math.max(BUS.width * k, 2.6), side = k > 0.4 ? 2 * k : 0;
@@ -577,13 +601,14 @@ function drawDynamic() {
       const s = SNAP ? Math.round(Math.max(DOT, Math.min(3.2, k * 60))) : Math.max(DOT, Math.min(3.2, k * 60));
       for (let o = 0; o < OPS.length; o++) for (const kind of [RUN, WAIT, OUT]) {
         ctx.beginPath(); let any = false;
-        for (const b of buses) { if (b.bus.op !== o || (kind === OUT ? b.sg.k !== OUT && b.sg.k !== IN : b.sg.k !== kind)) continue; const X = sx(b.x), Y = sy(b.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue; if (SNAP) ctx.rect(Math.round(X - s / 2), Math.round(Y - s / 2), s, s); else ctx.rect(X - s / 2, Y - s / 2, s, s); any = true; }
+        for (const b of buses) { if (b.inYard || b.bus.op !== o || (kind === OUT ? b.sg.k !== OUT && b.sg.k !== IN : b.sg.k !== kind)) continue; const X = sx(b.x), Y = sy(b.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue; if (SNAP) ctx.rect(Math.round(X - s / 2), Math.round(Y - s / 2), s, s); else ctx.rect(X - s / 2, Y - s / 2, s, s); any = true; }
         if (!any) continue;
         if (kind === OUT) { ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = 'rgb(' + OPS[o].rgb + ')'; ctx.lineWidth = 1; ctx.stroke(); }
         else { ctx.fillStyle = rgba(OPS[o].rgb, kind === WAIT ? 0.45 : 1); ctx.fill(); }
       }
     } else {
       for (const b of buses) {
+        if (b.inYard) continue;
         const X0 = sx(b.x), Y0 = sy(b.y); if (X0 < -len || X0 > W + len || Y0 < -len || Y0 > H + len) continue;
         let ax, ay, bx, by;
         { const f = pointAt(b.g, b.s + b.dir * BUS.length / 2), r = pointAt(b.g, b.s - b.dir * BUS.length / 2); ax = r.x; ay = r.y; bx = f.x; by = f.y; }
@@ -638,13 +663,13 @@ function drawDynamic() {
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmtN = n => n.toLocaleString('en-GB');
 const sw = (rgb, cls) => '<span class="sw ' + (cls || '') + '" style="background:rgb(' + rgb + ');border-color:rgb(' + rgb + ')"></span>';
-el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Waiting at a terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['ich', 'Parked at an interchange', sw('168,160,142', 'dim')], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
+el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['waitIch', 'Waiting at an interchange', sw(ICH_WAIT)], ['wait', 'Waiting at another terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['ich', 'Parked overnight at an interchange', sw(ICH_NIGHT)], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
 el('busops').innerHTML = OPS.map((o, i) => '<tr><td>' + sw(o.rgb) + o.name + '</td><td class="n" id="op-' + i + '">0</td></tr>').join('');
 el('trainstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Standing at a terminus', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['park', 'Stabled in a depot', sw('151,161,171')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="ts-' + r[0] + '">0</td></tr>').join('');
 el('trains').innerHTML = RL.map((l, i) => '<tr><td>' + sw(l.rgb, 'line') + l.name + '</td><td class="n" id="rl-' + i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains out on each line, of ' + RL.map((l, li) => rdepots.reduce((s, d) => s + d.cap[li], 0)).map((n, li) => n ? n + ' ' + RL[li].short : '').filter(Boolean).join(', ') + '.</td></tr>';
 el('depots').innerHTML = depots.map(d => '<tr><td>' + sw(OPS[d.op].rgb) + d.name + '</td><td class="n" id="dp-' + d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of the most each depot holds at once.</td></tr>'
   + railYards.filter(Y => Y.n).map(Y => '<tr><td>' + Y.groups.map(g => sw(RL[g.li].rgb, 'line')).join('') + Y.d.name + '</td><td class="n" id="rd-' + Y.d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains stabled now, of those each depot has out at the busiest time.</td></tr>';
-el('ichs').innerHTML = ICH.map(I => '<tr><td>' + I.name.replace(/ Interchange$/, '') + '</td><td class="n" id="ic-' + I.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of the berths.</td></tr>';
+el('ichs').innerHTML = '<tr><td colspan="2" class="small">' + sw(ICH_WAIT) + 'waiting between trips &nbsp; ' + sw(ICH_NIGHT) + 'parked overnight</td></tr>' + ICH.map(I => '<tr><td>' + I.name.replace(/ Interchange$/, '') + '</td><td class="n" id="ic-' + I.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses there now (waiting + overnight), of the berths. Bays beyond the berths are drawn dashed: the interchange\'s bus park.</td></tr>';
 el('credit').textContent = 'Built ' + D.meta.built + '. ' + D.meta.credit;
 const guessed = services.filter(s => s.guess).map(s => s.n);
 el('how').innerHTML = [
@@ -654,6 +679,7 @@ el('how').innerHTML = [
   'Buses running empty to and from their depot follow the roads, at 25 km/h: the shortest way, from the bus stop nearest the depot, along roads the bus routes use. Roads no bus route uses, and one-way streets, are not known.',
   'Trains run at their line\'s average frequency, 5:30 to 23:30, with the same peak shaping, turning round at the ends. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
   'Some buses sleep at the interchanges. Half of each interchange\'s berths (Wikipedia\'s list) are taken overnight by the last buses of the night to finish there, so they do not block earlier arrivals; their service\'s first buses leave from there in the morning. Each depot is drawn with room for the most of its buses it holds at once.',
+  'Through the day, a bus between trips waits where its next trip starts. At an interchange it is drawn inside the interchange (light orange), apart from the buses parked there overnight (dark orange). At busy times more buses wait than there are berths; the extra bays, drawn dashed, stand for the interchange\'s bus park.',
   'Bus types (single or double deck) are not in the free data: every bus is drawn 12 m long.',
   'Public holidays are not marked: they run as the day of the week they fall on.'
 ].map(t => '<li>' + t + '</li>').join('');
@@ -686,11 +712,11 @@ function updatePanel() {
   el('now').setAttribute('aria-pressed', live);
   for (const b of el('speeds').children) b.setAttribute('aria-pressed', !live && +b.dataset.speed === speed);
   const c = busCount, out = c.run + c.wait + c.dead;
-  el('bs-run').textContent = fmtN(c.run); el('bs-wait').textContent = fmtN(c.wait); el('bs-dead').textContent = fmtN(c.dead); el('bs-ich').textContent = fmtN(c.ich); el('bs-park').textContent = fmtN(Math.max(FLEET - out - c.ich, 0));
+  el('bs-run').textContent = fmtN(c.run); el('bs-waitIch').textContent = fmtN(c.waitIch); el('bs-wait').textContent = fmtN(c.wait - c.waitIch); el('bs-dead').textContent = fmtN(c.dead); el('bs-ich').textContent = fmtN(c.ich); el('bs-park').textContent = fmtN(Math.max(FLEET - out - c.ich, 0));
   OPS.forEach((o, i) => { el('op-' + i).textContent = fmtN(c.ops[i]); });
   RL.forEach((l, i) => { el('rl-' + i).textContent = trains.perLine ? trains.perLine[i] : 0; });
   const tc = trainCount; el('ts-run').textContent = tc.run; el('ts-wait').textContent = tc.wait; el('ts-dead').textContent = tc.dead; el('ts-park').textContent = Math.max(TRAIN_FLEET - tc.run - tc.wait - tc.dead, 0);
-  ICH.forEach(I => { el('ic-' + I.i).textContent = ichParked[I.i].length + ' of ' + I.slots; });
+  ICH.forEach(I => { const w = ichWaiting[I.i].length, p = ichParked[I.i].length; el('ic-' + I.i).textContent = (p ? w + ' + ' + p : w) + ' of ' + I.slots; });
   railYards.forEach(Y => { if (Y.n) el('rd-' + Y.d.i).textContent = Math.max(Y.n - tc.depotOut[Y.d.i].reduce((a, b) => a + b, 0), 0) + ' of ' + Y.n; });
   depots.forEach(dp => { el('dp-' + dp.i).textContent = fmtN(Math.max(dp.cap - c.depotOut[dp.i], 0)) + ' of ' + fmtN(dp.slots); });
   el('fleet').textContent = 'The model needs ' + fmtN(FLEET) + ' buses, from ' + depots.length + ' depots, for ' + fmtN(planFor(dayType(Math.floor(sim / DAY))).trips) + ' trips today. LTA\'s fleet is about 5,800, spares included. In service: by operator, above.';
@@ -764,7 +790,7 @@ function showTip(mx, my) {
   if (show.buses) for (const b of buses) { const d2 = near(b.x, b.y); if (d2 < bd) { bd = d2; html = describeBus(b); } }
   const over = d => { const y = yard(d); return Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4; };
   if (!html) for (const d of depots) if (over(d)) html = '<b>' + d.name + '</b><br>' + OPS[d.op].name + '<br>' + fmtN(Math.max(d.cap - busCount.depotOut[d.i], 0)) + ' of ' + fmtN(d.slots) + ' buses in the depot';
-  if (!html) for (const I of ICH) if (over(I)) html = '<b>' + I.name + '</b><br>' + ichParked[I.i].length + ' of ' + I.slots + ' berths taken by buses parked for the night';
+  if (!html) for (const I of ICH) if (over(I)) { const w = ichWaiting[I.i].length, p = ichParked[I.i].length; html = '<b>' + I.name + '</b><br>' + w + ' waiting between trips<br>' + p + ' parked overnight<br>' + I.slots + ' berths' + (w + p > I.slots ? ', so ' + (w + p - I.slots) + ' in the bus park' : ''); }
   if (!html && show.trains) for (const Y of railYards) {
     if (!Y.n) continue;
     const X = sx(Y.cx), Yc = sy(Y.cy), hw = Math.max(Y.w * view.k / 2, 4), hh = Math.max(Y.h * view.k / 2, 4);
