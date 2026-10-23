@@ -7,7 +7,7 @@ Every bus, tram and train through the day in Singapore, Greater Manchester and G
 - Singapore buses: LTA DataMall via BusRouter SG; running times and frequencies from singapore-gtfs (Vorld)
 - Singapore land: URA Master Plan 2019 Planning Area Boundary, data.gov.sg
 - Singapore depots and interchange berths: Wikipedia
-- Metrolink: Transport for Greater Manchester timetable (ODbL); Manchester roads from TfGM bus routes
+- Metrolink and Manchester buses: Transport for Greater Manchester timetable (ODbL); Manchester roads from TfGM bus routes
 - Glasgow Subway: estimated from SPT's published hours and frequencies; stations from NaPTAN (OGL)
 - Regional rail: National Rail timetable, via planarnetwork/gb-transit
 - Water, track, MRT lines and Glasgow roads: Â© OpenStreetMap contributors (ODbL)

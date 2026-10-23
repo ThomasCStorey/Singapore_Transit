@@ -47,7 +47,10 @@ function hopGeom(h) {
 const groups = D.groups.map((g, i) => ({ i, name: g.name, kind: g.kind, on: true }));
 const lines = D.lines.map((l, i) => ({ i, name: l.name, rgb: l.colour, group: groups[l.group], length: l.length, sections: l.sections }));
 const stations = D.stations.map(s => ({ name: s[0], x: px(s[1] / Q), y: py(s[2] / Q), group: s[3] }));
+const sums = a => { let c = 0; return a.map(v => c += v); };
+const paths = (D.paths || []).map(q => ({ g: geoms[q.g], s: sums(q.ds), d: sums(q.dd), n: q.n }));
 const pats = D.patterns.map(p => {
+  if (p.p != null) { const q = paths[p.p], t = sums(p.dt); return { line: lines[p.l], g: q.g, d: q.d, s: q.s, t, n: q.n, dur: t[t.length - 1], o: p.o !== 0, e: p.e !== 0 }; }
   const j = p.h ? hopGeom(p.h) : { g: geoms[p.g], d: p.d };
   return { line: lines[p.l], g: j.g, d: j.d, s: p.s, t: p.t, dur: p.t[p.t.length - 1], o: p.o !== 0, e: p.e !== 0 };
 });
@@ -144,7 +147,7 @@ const sx = x => (x - view.cx) * view.k + W / 2, sy = y => (y - view.cy) * view.k
 const path = (list, close) => { const p = new Path2D(); for (const a of list) { const g = decode(a); p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); if (close) p.closePath(); } return p; };
 const B = D.base, waterPath = path(B.water, true), islandPath = path(B.islands, true), riverPath = path(B.rivers), minorPath = path(B.roadsMinor), majorPath = path(B.roadsMajor), railPath = path(B.rail);
 const linePaths = lines.map(l => {
-  if (l.group.kind === 'rail') return null;
+  if (l.group.kind === 'rail' || l.group.kind === 'bus') return null;
   const p = new Path2D(), done = new Set();
   for (const pt of pats) { if (pt.line !== l || done.has(pt.g)) continue; done.add(pt.g); const g = pt.g; p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); }
   return p;
@@ -190,6 +193,7 @@ function drawBase() {
   stations.forEach((s, i) => {
     if (!usedStations.has(i) || !groups[s.group].on) return;
     const X = sx(s.x), Y = sy(s.y); if (X < -10 || X > W + 10 || Y < -10 || Y > H + 10) return;
+    if (groups[s.group].kind === 'bus') { if (k > 0.6) { c.fillStyle = '#8f8a7e'; c.fillRect(X - 1.5, Y - 1.5, 3, 3); } return; }
     c.beginPath(); c.arc(X, Y, groups[s.group].kind === 'rail' ? r * 0.9 : r, 0, 7); c.fillStyle = '#ffffff'; c.fill(); c.lineWidth = r > 3 ? 1.5 : 1; c.strokeStyle = groups[s.group].kind === 'rail' ? '#5b616b' : '#1b1d21'; c.stroke();
   });
   const pr = panel.getBoundingClientRect(), placed = [{ x0: pr.left, y0: pr.top, x1: pr.right + 4, y1: pr.bottom + 4 }];
@@ -202,7 +206,7 @@ function drawBase() {
     }
   };
   c.textBaseline = 'middle'; c.lineJoin = 'round';
-  if (k > 0.06) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind !== 'rail') label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 7); });
+  if (k > 0.06) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind !== 'rail' && groups[s.group].kind !== 'bus') label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 7); });
   if (k > 0.1) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind === 'rail') label(s.name, sx(s.x), sy(s.y), '11px system-ui, Segoe UI, Arial, sans-serif', '#3d424a', '#ffffff', 7); });
   const minRank = k < 0.005 ? 1 : k < 0.03 ? 2 : k < 0.12 ? 3 : 4;
   for (const p of places) if (p.rank < minRank) label(p.rank < 2 ? p.name.toUpperCase() : p.name, sx(p.x), sy(p.y), (p.rank === 0 ? '700 13px' : p.rank === 1 ? '600 11px' : '10px') + ' system-ui, Segoe UI, Arial, sans-serif', '#8a8373', '#f3f1ea', 0);
@@ -212,7 +216,17 @@ let vehicles = [];
 function drawVehicles() {
   const k = view.k;
   ctx.lineJoin = 'round';
-  for (const v of vehicles) {
+  const dot = Math.min(Math.max(k * 60, 2.4), 4);
+  if (k < 0.15) for (const v of vehicles) {
+    if (v.tr.p.line.group.kind !== 'bus') continue;
+    const X = sx(v.x), Y = sy(v.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue;
+    ctx.globalAlpha = v.alpha; ctx.fillStyle = 'rgb(' + v.tr.p.line.rgb + ')'; ctx.fillRect(X - dot / 2, Y - dot / 2, dot, dot);
+    ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(27,29,33,0.55)'; ctx.strokeRect(X - dot / 2, Y - dot / 2, dot, dot);
+  }
+  ctx.globalAlpha = 1;
+  const order = vehicles.filter(v => v.tr.p.line.group.kind === 'bus').concat(vehicles.filter(v => v.tr.p.line.group.kind !== 'bus'));
+  for (const v of order) {
+    if (k < 0.15 && v.tr.p.line.group.kind === 'bus') continue;
     const l = v.tr.p.line, N = l.sections, low = k < 0.05;
     const U = Math.max(l.length * k, low ? 4 : 7), Wd = low ? 3 : Math.min(Math.max(3.2 * k, 3.5), 9);
     const X0 = sx(v.x), Y0 = sy(v.y); if (X0 < -U || X0 > W + U || Y0 < -U || Y0 > H + U) continue;
@@ -296,7 +310,7 @@ window.addEventListener('resize', () => { const had = W && H; resize(); if (!had
 
 function describe(v) {
   const p = v.tr.p, name = i => stations[p.s[i]].name, at = i => hhmm(v.tr.start + p.t[i]), last = p.s.length - 1;
-  const head = '<b>' + p.line.name + '</b>' + (p.s[0] === p.s[last] ? '' : ' to ' + name(last));
+  const head = '<b>' + (p.n ? (/^\w{1,5}$/.test(p.n) ? 'Bus ' + p.n : p.n) : p.line.name) + '</b>' + (p.s[0] === p.s[last] ? '' : ' to ' + name(last)) + (p.n ? '<br>' + p.line.name : '');
   if (v.state === 'waiting') return head + '<br>At ' + name(0) + ', departs ' + at(0);
   if (v.state === 'done') return head + '<br>Arrived at ' + name(last) + ' ' + at(last);
   if (v.moving) return head + '<br>Next stop ' + name(v.h + 1) + ' ' + at(v.h + 1);
@@ -305,7 +319,7 @@ function describe(v) {
 function showTip(mx, my) {
   let html = '', bd = 12 * 12;
   for (const v of vehicles) { const dx = sx(v.x) - mx, dy = sy(v.y) - my, d2 = dx * dx + dy * dy; if (d2 < bd) { bd = d2; html = describe(v); } }
-  if (!html) { let sd = 8 * 8; stations.forEach((s, i) => { if (!usedStations.has(i) || !groups[s.group].on) return; const dx = sx(s.x) - mx, dy = sy(s.y) - my, d2 = dx * dx + dy * dy; if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b>'; } }); }
+  if (!html) { let sd = 8 * 8; stations.forEach((s, i) => { if (!usedStations.has(i) || !groups[s.group].on || (groups[s.group].kind === 'bus' && view.k <= 0.6)) return; const dx = sx(s.x) - mx, dy = sy(s.y) - my, d2 = dx * dx + dy * dy; if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b>'; } }); }
   if (!html) { tip.style.display = 'none'; return; }
   tip.innerHTML = html; tip.style.display = 'block';
   tip.style.left = Math.min(mx + 14, W - tip.offsetWidth - 8) + 'px'; tip.style.top = Math.max(my - tip.offsetHeight - 10, 8) + 'px';
