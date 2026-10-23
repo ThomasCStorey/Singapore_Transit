@@ -578,22 +578,26 @@ function drawBase() {
 
 const rgba = (rgb, a) => 'rgba(' + rgb + ',' + a + ')';
 let buses = [], trains = [], DOT = 2.2, SNAP = false;
-function drawYard(d, n, rgbOf) {
+function drawYard(d, n, rgbOf, capOf) {
   const k = view.k, y = yard(d), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
   n = Math.min(n, y.cols * y.rows);
   if (!n || sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) return;
   if (k * 4 < 1.2) {
-    for (let r = 0; r * y.cols < n; r++) { const w = Math.min(y.cols, n - r * y.cols) / y.cols; ctx.fillStyle = rgba(rgbOf(r * y.cols), 0.9); ctx.fillRect(sx(x0), sy(y0 + y.h - (r + 1) * 15), Math.max(y.w * w * k, 1.5), Math.max(15 * k, 1)); }
+    for (let r = 0; r * y.cols < n; r++) { const w = Math.min(y.cols, n - r * y.cols) / y.cols; ctx.fillStyle = rgba((capOf || rgbOf)(r * y.cols), 0.9); ctx.fillRect(sx(x0), sy(y0 + y.h - (r + 1) * 15), Math.max(y.w * w * k, 1.5), Math.max(15 * k, 1)); }
     return;
   }
-  for (let i = 0; i < n; i++) { const c = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillStyle = rgba(rgbOf(i), 0.9); ctx.fillRect(sx(x0 + c * 4 + 0.7), sy(y0 + r * 15 + 1.5), BUS.width * k, BUS.length * k); }
+  for (let i = 0; i < n; i++) {
+    const c = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols), X = sx(x0 + c * 4 + 0.7), Y = sy(y0 + r * 15 + 1.5);
+    ctx.fillStyle = rgba(rgbOf(i), 0.9); ctx.fillRect(X, Y, BUS.width * k, BUS.length * k);
+    if (capOf) { ctx.fillStyle = 'rgb(' + capOf(i) + ')'; ctx.fillRect(X, Y, BUS.width * k, BUS.length * k * 0.4); }
+  }
 }
 function drawDynamic() {
   const k = view.k;
   ctx.lineJoin = 'round';
   if (show.buses) {
     for (const d of depots) drawYard(d, Math.max(0, d.cap - busCount.depotOut[d.i]), () => OPS[d.op].rgb);
-    for (const I of ICH) { const night = ichParked[I.i].length; drawYard(I, night + ichWaiting[I.i].length, i => i < night ? ICH_NIGHT : ICH_WAIT); }
+    for (const I of ICH) { const P = ichParked[I.i], Q = ichWaiting[I.i], night = P.length; drawYard(I, night + Q.length, i => OPS[i < night ? P[i][2] : Q[i - night].bus.op].rgb, i => i < night ? ICH_NIGHT : ICH_WAIT); }
   }
   if (show.buses) {
     const len = Math.max(BUS.length * k, 0), wid = Math.max(BUS.width * k, 2.6), side = k > 0.4 ? 2 * k : 0;
@@ -663,13 +667,14 @@ function drawDynamic() {
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmtN = n => n.toLocaleString('en-GB');
 const sw = (rgb, cls) => '<span class="sw ' + (cls || '') + '" style="background:rgb(' + rgb + ');border-color:rgb(' + rgb + ')"></span>';
-el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['waitIch', 'Waiting at an interchange', sw(ICH_WAIT)], ['wait', 'Waiting at another terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['ich', 'Parked overnight at an interchange', sw(ICH_NIGHT)], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
+const sw2 = cap => '<span class="sw" style="background:linear-gradient(rgb(' + cap + ') 0 45%, rgb(96,108,124) 45%)"></span>';
+el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['waitIch', 'Waiting at an interchange', sw2(ICH_WAIT)], ['wait', 'Waiting at another terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['ich', 'Parked overnight at an interchange', sw2(ICH_NIGHT)], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
 el('busops').innerHTML = OPS.map((o, i) => '<tr><td>' + sw(o.rgb) + o.name + '</td><td class="n" id="op-' + i + '">0</td></tr>').join('');
 el('trainstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Standing at a terminus', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['park', 'Stabled in a depot', sw('151,161,171')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="ts-' + r[0] + '">0</td></tr>').join('');
 el('trains').innerHTML = RL.map((l, i) => '<tr><td>' + sw(l.rgb, 'line') + l.name + '</td><td class="n" id="rl-' + i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains out on each line, of ' + RL.map((l, li) => rdepots.reduce((s, d) => s + d.cap[li], 0)).map((n, li) => n ? n + ' ' + RL[li].short : '').filter(Boolean).join(', ') + '.</td></tr>';
 el('depots').innerHTML = depots.map(d => '<tr><td>' + sw(OPS[d.op].rgb) + d.name + '</td><td class="n" id="dp-' + d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of the most each depot holds at once.</td></tr>'
   + railYards.filter(Y => Y.n).map(Y => '<tr><td>' + Y.groups.map(g => sw(RL[g.li].rgb, 'line')).join('') + Y.d.name + '</td><td class="n" id="rd-' + Y.d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains stabled now, of those each depot has out at the busiest time.</td></tr>';
-el('ichs').innerHTML = '<tr><td colspan="2" class="small">' + sw(ICH_WAIT) + 'waiting between trips &nbsp; ' + sw(ICH_NIGHT) + 'parked overnight</td></tr>' + ICH.map(I => '<tr><td>' + I.name.replace(/ Interchange$/, '') + '</td><td class="n" id="ic-' + I.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses there now (waiting + overnight), of the berths. Bays beyond the berths are drawn dashed: the interchange\'s bus park.</td></tr>';
+el('ichs').innerHTML = '<tr><td colspan="2" class="small">' + sw2(ICH_WAIT) + 'waiting between trips &nbsp; ' + sw2(ICH_NIGHT) + 'parked overnight<br>Bus colour: operator; the end shows why it is there.</td></tr>' + ICH.map(I => '<tr><td>' + I.name.replace(/ Interchange$/, '') + '</td><td class="n" id="ic-' + I.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses there now (waiting + overnight), of the berths. Bays beyond the berths are drawn dashed: the interchange\'s bus park.</td></tr>';
 el('credit').textContent = 'Built ' + D.meta.built + '. ' + D.meta.credit;
 const guessed = services.filter(s => s.guess).map(s => s.n);
 el('how').innerHTML = [
@@ -679,7 +684,7 @@ el('how').innerHTML = [
   'Buses running empty to and from their depot follow the roads, at 25 km/h: the shortest way, from the bus stop nearest the depot, along roads the bus routes use. Roads no bus route uses, and one-way streets, are not known.',
   'Trains run at their line\'s average frequency, 5:30 to 23:30, with the same peak shaping, turning round at the ends. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
   'Some buses sleep at the interchanges. Half of each interchange\'s berths (Wikipedia\'s list) are taken overnight by the last buses of the night to finish there, so they do not block earlier arrivals; their service\'s first buses leave from there in the morning. Each depot is drawn with room for the most of its buses it holds at once.',
-  'Through the day, a bus between trips waits where its next trip starts. At an interchange it is drawn inside the interchange (light orange), apart from the buses parked there overnight (dark orange). At busy times more buses wait than there are berths; the extra bays, drawn dashed, stand for the interchange\'s bus park.',
+  'Through the day, a bus between trips waits where its next trip starts. At an interchange it is drawn inside the interchange in its operator\'s colour with a light orange end, apart from the buses parked there overnight (dark orange end). At busy times more buses wait than there are berths; the extra bays, drawn dashed, stand for the interchange\'s bus park.',
   'Bus types (single or double deck) are not in the free data: every bus is drawn 12 m long.',
   'Public holidays are not marked: they run as the day of the week they fall on.'
 ].map(t => '<li>' + t + '</li>').join('');
