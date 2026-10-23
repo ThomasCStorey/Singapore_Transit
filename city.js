@@ -87,46 +87,48 @@ function tripsFor(dk) {
   for (const t of bus) if (t.b >= 0) { if (!blocks.has(t.b)) blocks.set(t.b, []); blocks.get(t.b).push(t); }
   for (const list of blocks.values()) for (let i = 1; i < list.length; i++) { const a = list[i - 1], c = list[i]; if (a.p.e && c.p.o && c.start >= a.end - 120) { a.next = c; c.prev = a; } }
   link(bus.filter(t => t.b < 0));
-  out.buses = workings(bus);
+  out.work = workings(out);
   tripCache.set(dk, out);
   return out;
 }
 const isBus = tr => tr.p.line.group.kind === 'bus';
-const PREP = 300, DEAD = 25 / 3.6, WAIT_MAX = 2400, OUT = 0, WAIT = 1, RUN = 2, IN = 3, MOVE = 4;
-const depots = (D.depots || []).map((d, i) => ({ i, name: d.name, l: d.l != null ? d.l : -1, x: px(d.lon), y: py(d.lat), cap: 0, rgb: '96,108,124' }));
+const PREP = 300, WAIT_MAX = 2400, DAY0 = 3 * 3600, OUT = 0, WAIT = 1, RUN = 2, IN = 3, MOVE = 4;
+const SPEED = { bus: 25 / 3.6, rail: 40 / 3.6, subway: 20 / 3.6, tram: 20 / 3.6 }, REACH = { bus: 15000, rail: 40000, subway: 5000, tram: 10000 };
+const depots = (D.depots || []).map((d, i) => ({ i, name: d.name, ls: d.ls || [], k: d.k || 'bus', x: px(d.lon), y: py(d.lat), cap: 0, rgb: '96,108,124', len: 12, grp: null }));
 const depotRun = new Map((D.depotRuns || []).map(r => [r[0] + '|' + r[1], geoms[r[2]]]));
 const nearDepot = new Map();
 function depotFor(st, line) {
-  const key = st + '|' + line.i;
-  if (!nearDepot.has(key)) { const s = stations[st]; let best = null, bd = 15000 ** 2; for (const d of depots) { if (d.l >= 0 && d.l !== line.i) continue; const v = (d.x - s.x) ** 2 + (d.y - s.y) ** 2; if (v < bd) { bd = v; best = d; } } nearDepot.set(key, best); }
+  const key = st + '|' + line.i, kind = line.group.kind;
+  if (!nearDepot.has(key)) { const s = stations[st]; let best = null, bd = (REACH[kind] || 15000) ** 2; for (const d of depots) { if (d.k !== kind || (d.ls.length && !d.ls.includes(line.i))) continue; const v = (d.x - s.x) ** 2 + (d.y - s.y) ** 2; if (v < bd) { bd = v; best = d; } } nearDepot.set(key, best); }
   return nearDepot.get(key);
 }
 const straight = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }; };
 function runTo(dep, st, back) {
-  const g = depotRun.get(dep.i + '|' + st); if (g) return { g, rev: back, secs: g.cum[g.n - 1] / DEAD + 60 };
-  const gl = back ? straight(stations[st], dep) : straight(dep, stations[st]); return { g: gl, rev: false, secs: gl.cum[1] * 1.3 / DEAD + 120 };
+  const v = SPEED[dep.k] || SPEED.bus, g = depotRun.get(dep.i + '|' + st); if (g) return { g, rev: back, secs: g.cum[g.n - 1] / v + 60 };
+  const gl = back ? straight(stations[st], dep) : straight(dep, stations[st]); return { g: gl, rev: false, secs: gl.cum[1] * 1.3 / v + 120 };
 }
 function workings(trips) {
   const out = [];
   for (const head of trips) {
     if (head.prev) continue;
-    const segs = [], dep = head.p.o ? depotFor(head.p.s[0], head.p.line) : null;
+    let tail = head; while (tail.next) tail = tail.next;
+    const segs = [], dep = head.p.o ? depotFor(head.p.s[0], head.p.line) : tail.p.e ? depotFor(tail.p.s[tail.p.s.length - 1], tail.p.line) : null;
     const add = s => { if (s.t1 > s.t0) segs.push(s); };
     const goOut = tr => { const R = runTo(dep, tr.p.s[0], false); add({ k: OUT, t0: tr.start - PREP - R.secs, t1: tr.start - PREP, run: R, tr }); add({ k: WAIT, t0: tr.start - PREP, t1: tr.start, tr }); };
     const goIn = tr => { const R = runTo(dep, tr.p.s[tr.p.s.length - 1], true); add({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, tr }); };
-    if (dep) goOut(head); else add({ k: WAIT, t0: head.start - 60, t1: head.start, tr: head, fade: 1 });
+    if (dep && head.p.o) goOut(head); else add({ k: WAIT, t0: head.start - 60, t1: head.start, tr: head, fade: 1 });
     for (let tr = head; tr; tr = tr.next) {
       add({ k: RUN, t0: tr.start, t1: tr.end, tr });
       const nx = tr.next;
       if (!nx) { if (dep && tr.p.e) goIn(tr); else add({ k: WAIT, t0: tr.end, t1: tr.end + 45, tr, fade: -1, done: 1 }); break; }
       const gap = nx.start - tr.end;
-      if (dep && gap > Math.max(WAIT_MAX, runTo(dep, tr.p.s[tr.p.s.length - 1], true).secs + runTo(dep, nx.p.s[0], false).secs + PREP + 1800)) { goIn(tr); goOut(nx); continue; }
+      if (dep && tr.p.e && nx.p.o && gap > Math.max(WAIT_MAX, runTo(dep, tr.p.s[tr.p.s.length - 1], true).secs + runTo(dep, nx.p.s[0], false).secs + PREP + 1800)) { goIn(tr); goOut(nx); continue; }
       const a = pointAt(tr.p.g, tr.p.d[tr.p.d.length - 1]), b = pointAt(nx.p.g, nx.p.d[0]), far = Math.hypot(b.x - a.x, b.y - a.y);
-      const secs = far > 40 ? Math.min(far * 1.3 / DEAD + 60, Math.max(gap, 0)) : 0;
+      const secs = far > (isBus(tr) ? 40 : 300) ? Math.min(far * 1.3 / SPEED.bus + 60, Math.max(gap, 0)) : 0;
       if (secs) add({ k: MOVE, t0: tr.end, t1: tr.end + secs, run: { g: straight(a, b), rev: false, secs }, tr: nx });
       add({ k: WAIT, t0: tr.end + secs, t1: nx.start, tr: nx });
     }
-    if (segs.length) out.push({ segs, dep, line: head.p.line, t0: segs[0].t0, t1: segs[segs.length - 1].t1, slot: out.length % 4 });
+    if (segs.length) out.push({ segs, dep, line: head.p.line, t0: segs[0].t0, t1: segs[segs.length - 1].t1, slot: out.length % 4, a0: dep && head.p.o ? segs[0].t0 : DAY0, a1: dep && tail.p.e ? segs[segs.length - 1].t1 : DAY0 + 86400 });
   }
   return out.sort((a, b) => a.t0 - b.t0);
 }
@@ -134,19 +136,23 @@ let capsFor = null;
 function depotCaps(day) {
   if (capsFor !== null || !depots.length) return; capsFor = day;
   const mix = depots.map(() => new Map()), ev = [], n = depots.map(() => 0);
-  for (let d = day - 1; d <= day + 1; d++) for (const w of tripsFor(d).buses) {
+  for (let d = day - 1; d <= day + 1; d++) for (const w of tripsFor(d).work) {
     if (!w.dep) continue;
     mix[w.dep.i].set(w.line, (mix[w.dep.i].get(w.line) || 0) + 1);
-    let a = null, b = 0;
-    for (const sg of w.segs) { if (a !== null && sg.t0 > b + 1) { ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + b, -1, w.dep.i]); a = null; } if (a === null) a = sg.t0; b = sg.t1; }
-    if (a !== null) ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + b, -1, w.dep.i]);
+    let a = Math.min(w.a0, w.segs[0].t0), b = 0;
+    for (const sg of w.segs) { if (sg.t0 > b + 1 && b) { ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + b, -1, w.dep.i]); a = sg.t0; } b = sg.t1; }
+    ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + Math.max(b, w.a1), -1, w.dep.i]);
   }
   ev.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
   for (const [, s, i] of ev) { n[i] += s; if (n[i] > depots[i].cap) depots[i].cap = n[i]; }
-  depots.forEach((dp, i) => { let best = null; for (const [l, c] of mix[i]) if (!best || c > mix[i].get(best)) best = l; if (best) dp.rgb = best.rgb; });
+  depots.forEach((dp, i) => { let best = null; for (const [l, c] of mix[i]) { if (!best || c > mix[i].get(best)) best = l; dp.len = Math.max(dp.len, l.length); } if (best) { dp.rgb = best.rgb; dp.grp = best.group; } });
   baseDirty = true;
 }
-const yard = d => { const cols = Math.max(12, Math.round(Math.sqrt(6 * d.cap))), rows = Math.max(1, Math.ceil(d.cap / cols)); return { cols, rows, w: cols * 4, h: rows * 15 }; };
+function yard(d) {
+  if (d.k === 'bus') { const cols = Math.max(12, Math.round(Math.sqrt(6 * d.cap))), rows = Math.max(1, Math.ceil(d.cap / cols)); return { cols, rows, w: cols * 4, h: rows * 15, sw: 4, sh: 15, bw: 2.55, bl: 12, across: true }; }
+  const rows = Math.min(Math.max(d.cap, 1), 8), cols = Math.max(1, Math.ceil(d.cap / 8)); return { cols, rows, w: cols * (d.len + 10), h: rows * 6, sw: d.len + 10, sh: 6, bw: d.len, bl: 3.2, across: false };
+}
+const depotOn = d => d.cap && d.grp && d.grp.on;
 function link(trips) {
   const waiting = new Map(), key = (st, l) => st + '|' + l;
   for (const tr of trips.slice().sort((a, b) => a.end - b.end)) {
@@ -182,41 +188,29 @@ function progress(p, tau) {
 function vehiclesAt(sim) {
   const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [], count = lines.map(() => 0), bus = { run: 0, wait: 0, dead: 0 }, away = depots.map(() => 0);
   depotCaps(day);
+  const segAt = (w, t) => { const S = w.segs; let lo = 0, hi = S.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (S[m].t0 <= t) lo = m; else hi = m - 1; } return t < S[lo].t1 ? S[lo] : null; };
   for (const [dk, t] of [[day - 1, secs + 86400], [day, secs]]) {
-    const trips = tripsFor(dk);
-    for (const tr of trips) {
-      if (tr.start - TURN - 120 > t) break;
-      if (isBus(tr)) continue;
-      const from = tr.prev ? Math.min(tr.prev.end, tr.start) : tr.start - 60, to = tr.next ? tr.end : tr.end + 45;
-      if (t < from || t >= to) continue;
-      const line = tr.p.line; if (!line.group.on) continue;
-      const pr = progress(tr.p, t - tr.start), pt = pointAt(tr.p.g, pr.s);
-      const alpha = t < tr.start && !tr.prev ? 1 + (t - tr.start) / 60 : t > tr.end && !tr.next ? 1 - (t - tr.end) / 45 : 1;
-      if (t >= tr.start && t < tr.end) count[line.i]++;
-      out.push({ tr, t, g: tr.p.g, dir: 1, s: pr.s, h: pr.h, moving: pr.moving, x: pt.x, y: pt.y, alpha: Math.min(Math.max(alpha, 0), 1), state: t < tr.start ? 'waiting' : t >= tr.end ? 'done' : 'running' });
-    }
-    for (const w of trips.buses) {
+    const work = tripsFor(dk).work;
+    for (const w of work) if (w.dep && t >= w.a0 && t < w.a1 && !(t >= w.t0 && t < w.t1 && !segAt(w, t))) away[w.dep.i]++;
+    for (const w of work) {
       if (w.t0 > t) break;
       if (t >= w.t1) continue;
-      const S = w.segs; let lo = 0, hi = S.length - 1;
-      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (S[m].t0 <= t) lo = m; else hi = m - 1; }
-      const sg = S[lo]; if (t >= sg.t1) continue;
-      if (w.dep) away[w.dep.i]++;
+      const sg = segAt(w, t); if (!sg) continue;
       if (!w.line.group.on) continue;
-      const tr = sg.tr, v = { tr, w, sg, t, dir: 1, alpha: 1 };
-      if (sg.k === RUN) { const pr = progress(tr.p, t - tr.start); Object.assign(v, { g: tr.p.g, s: pr.s, h: pr.h, moving: pr.moving, state: 'running' }); count[w.line.i]++; bus.run++; }
+      const tr = sg.tr, v = { tr, w, sg, t, dir: 1, alpha: 1 }, b = isBus(tr);
+      if (sg.k === RUN) { const pr = progress(tr.p, t - tr.start); Object.assign(v, { g: tr.p.g, s: pr.s, h: pr.h, moving: pr.moving, state: 'running' }); count[w.line.i]++; if (b) bus.run++; }
       else if (sg.k === WAIT) {
-        Object.assign(v, { g: tr.p.g, s: sg.done ? tr.p.d[tr.p.d.length - 1] : tr.p.d[0] - 14 - w.slot * 15, state: sg.done ? 'done' : 'waiting' });
-        if (sg.fade) v.alpha = sg.fade > 0 ? (t - sg.t0) / (sg.t1 - sg.t0) : 1 - (t - sg.t0) / (sg.t1 - sg.t0);
-        bus.wait++;
+        Object.assign(v, { g: tr.p.g, s: sg.done ? tr.p.d[tr.p.d.length - 1] : tr.p.d[0] - (b ? 14 + w.slot * 15 : 0), state: sg.done ? 'done' : 'waiting' });
+        if (sg.fade) v.alpha = Math.min(Math.max(sg.fade > 0 ? (t - sg.t0) / (sg.t1 - sg.t0) : 1 - (t - sg.t0) / (sg.t1 - sg.t0), 0), 1);
+        if (b) bus.wait++;
       } else {
         let f = (t - sg.t0) / (sg.t1 - sg.t0); f = f * f * (3 - 2 * f); const L = sg.run.g.cum[sg.run.g.n - 1];
-        Object.assign(v, { g: sg.run.g, s: sg.run.rev ? L * (1 - f) : L * f, dir: sg.run.rev ? -1 : 1, state: 'dead' }); bus.dead++;
+        Object.assign(v, { g: sg.run.g, s: sg.run.rev ? L * (1 - f) : L * f, dir: sg.run.rev ? -1 : 1, state: 'dead' }); if (b) bus.dead++;
       }
       const pt = pointAt(v.g, v.s); v.x = pt.x; v.y = pt.y; out.push(v);
     }
   }
-  bus.park = depots.reduce((n, d) => n + Math.max(d.cap - away[d.i], 0), 0);
+  bus.park = depots.reduce((n, d) => n + (d.k === 'bus' ? Math.max(d.cap - away[d.i], 0) : 0), 0);
   out.count = count; out.bus = bus; out.away = away;
   return out;
 }
@@ -240,8 +234,7 @@ const linePaths = lines.map(l => {
 });
 const places = B.places.map(p => ({ name: p[0], x: px(p[1] / Q), y: py(p[2] / Q), rank: p[3] })).sort((a, b) => (a.name === D.meta.name ? -1 : 0) - (b.name === D.meta.name ? -1 : 0) || a.rank - b.rank);
 const usedStations = new Set(); for (const p of pats) for (const s of p.s) usedStations.add(s);
-const bounds = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-for (const s of stations) { bounds.x0 = Math.min(bounds.x0, s.x); bounds.x1 = Math.max(bounds.x1, s.x); bounds.y0 = Math.min(bounds.y0, s.y); bounds.y1 = Math.max(bounds.y1, s.y); }
+const bb = D.meta.bbox, bounds = { x0: px(bb[1]), x1: px(bb[3]), y0: py(bb[2]), y1: py(bb[0]) };
 
 function fit() {
   const r = panel.getBoundingClientRect(), sheet = r.width >= W - 2, left = sheet ? 0 : r.right + 12, bottom = sheet ? H - r.top : 0, m = 30;
@@ -274,8 +267,8 @@ function drawBase() {
   const lw = Math.min(Math.max(5 * k, 2.2), 6);
   lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = '#ffffff'; c.lineWidth = (lw + 2) / k; c.stroke(linePaths[i]); });
   lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = lw / k; c.stroke(linePaths[i]); });
-  const busOn = groups.some(g => g.kind === 'bus' && g.on);
-  if (busOn) { c.fillStyle = '#e2ddd0'; c.strokeStyle = '#a8a08e'; c.lineWidth = 1 / k; for (const d of depots) if (d.cap) { const y = yard(d); c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); } }
+  c.lineWidth = 1 / k;
+  for (const d of depots) if (depotOn(d)) { const y = yard(d); c.fillStyle = d.k === 'bus' ? '#e2ddd0' : '#dde2e8'; c.strokeStyle = d.k === 'bus' ? '#a8a08e' : '#97a1ab'; c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   const r = Math.min(Math.max(k * 40, 1.6), 5);
   stations.forEach((s, i) => {
@@ -294,7 +287,7 @@ function drawBase() {
     }
   };
   c.textBaseline = 'middle'; c.lineJoin = 'round';
-  if (busOn && k > 0.011) for (const d of depots) if (d.cap) label(d.name + ' depot', sx(d.x), sy(d.y) + Math.max(yard(d).h * k / 2, 4) + 10, '600 11px system-ui, Segoe UI, Arial, sans-serif', '#5a4a2a', '#f3f1ea', 0);
+  if (k > 0.011) for (const d of depots) if (depotOn(d)) label(d.name + ' depot', sx(d.x), sy(d.y) + Math.max(yard(d).h * k / 2, 4) + 10, '600 11px system-ui, Segoe UI, Arial, sans-serif', d.k === 'bus' ? '#5a4a2a' : '#3a4652', '#f3f1ea', 0);
   if (k > 0.06) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind !== 'rail' && groups[s.group].kind !== 'bus') label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 7); });
   if (k > 0.1) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind === 'rail') label(s.name, sx(s.x), sy(s.y), '11px system-ui, Segoe UI, Arial, sans-serif', '#3d424a', '#ffffff', 7); });
   const minRank = k < 0.005 ? 1 : k < 0.03 ? 2 : k < 0.12 ? 3 : 4;
@@ -305,13 +298,16 @@ let vehicles = [];
 function drawVehicles() {
   const k = view.k;
   ctx.lineJoin = 'round';
-  if (groups.some(g => g.kind === 'bus' && g.on)) for (const d of depots) {
-    if (!d.cap) continue;
+  for (const d of depots) {
+    if (!depotOn(d)) continue;
     const y = yard(d), n = Math.min(Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0), y.cols * y.rows), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
     if (!n || sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) continue;
     ctx.fillStyle = 'rgba(' + d.rgb + ',0.85)';
-    if (k * 4 < 1.2) { const rows = Math.ceil(n / y.cols); ctx.fillRect(sx(x0), sy(y0 + y.h - rows * 15), Math.max(y.w * k, 2), Math.max(rows * 15 * k, 1.5)); continue; }
-    for (let i = 0; i < n; i++) { const cl = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillRect(sx(x0 + cl * 4 + 0.7), sy(y0 + r * 15 + 1.5), 2.55 * k, 12 * k); }
+    if (Math.min(y.sw, y.sh) * k < 1.2) { const f = n / (y.cols * y.rows); ctx.fillRect(sx(x0), sy(y0 + y.h * (1 - f)), Math.max(y.w * k, 2), Math.max(y.h * f * k, 1.5)); continue; }
+    for (let i = 0; i < n; i++) {
+      const cl = y.across ? i % y.cols : Math.floor(i / y.rows), r = y.across ? y.rows - 1 - Math.floor(i / y.cols) : i % y.rows;
+      ctx.fillRect(sx(x0 + cl * y.sw + (y.across ? 0.7 : 5)), sy(y0 + r * y.sh + 1.4), y.bw * k, y.bl * k);
+    }
   }
   const dot = Math.min(Math.max(k * 60, 2.4), 4);
   if (k < 0.15) for (const v of vehicles) {
@@ -421,9 +417,9 @@ function describe(v) {
 function showTip(mx, my) {
   let html = '', bd = 12 * 12;
   for (const v of vehicles) { const dx = sx(v.x) - mx, dy = sy(v.y) - my, d2 = dx * dx + dy * dy; if (d2 < bd) { bd = d2; html = describe(v); } }
-  if (!html && groups.some(g => g.kind === 'bus' && g.on)) for (const d of depots) {
-    if (!d.cap) continue; const y = yard(d);
-    if (Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4) html = '<b>' + d.name + ' depot</b><br>' + Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0) + ' of ' + d.cap + ' buses in';
+  if (!html) for (const d of depots) {
+    if (!depotOn(d)) continue; const y = yard(d);
+    if (Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4) html = '<b>' + d.name + ' depot</b><br>' + Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0) + ' of ' + d.cap + (d.k === 'bus' ? ' buses in' : ' trains in');
   }
   if (!html) { let sd = 8 * 8; stations.forEach((s, i) => { if (!usedStations.has(i) || !groups[s.group].on || (groups[s.group].kind === 'bus' && view.k <= 0.6)) return; const dx = sx(s.x) - mx, dy = sy(s.y) - my, d2 = dx * dx + dy * dy; if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b>'; } }); }
   if (!html) { tip.style.display = 'none'; return; }
