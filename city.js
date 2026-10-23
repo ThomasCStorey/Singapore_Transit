@@ -63,7 +63,7 @@ function rawTrips(dk) {
   for (const r of D.runs) {
     if (!on[r.v]) continue;
     const p = pats[r.p];
-    for (const start of r.t) { const k = r.p + '@' + start; if (seen.has(k)) continue; seen.add(k); out.push({ p, start, end: start + p.dur }); }
+    r.t.forEach((start, i) => { const k = r.p + '@' + start; if (seen.has(k)) return; seen.add(k); out.push({ p, start, end: start + p.dur, b: r.b ? r.b[i] : -1 }); });
   }
   return out;
 }
@@ -81,10 +81,72 @@ function tripsFor(dk) {
   }
   borrowed.set(dk, from);
   out.sort((a, b) => a.start - b.start);
-  link(out);
+  const bus = out.filter(isBus);
+  link(out.filter(t => !isBus(t)));
+  const blocks = new Map();
+  for (const t of bus) if (t.b >= 0) { if (!blocks.has(t.b)) blocks.set(t.b, []); blocks.get(t.b).push(t); }
+  for (const list of blocks.values()) for (let i = 1; i < list.length; i++) { const a = list[i - 1], c = list[i]; if (a.p.e && c.p.o && c.start >= a.end - 120) { a.next = c; c.prev = a; } }
+  link(bus.filter(t => t.b < 0));
+  out.buses = workings(bus);
   tripCache.set(dk, out);
   return out;
 }
+const isBus = tr => tr.p.line.group.kind === 'bus';
+const PREP = 300, DEAD = 25 / 3.6, WAIT_MAX = 2400, OUT = 0, WAIT = 1, RUN = 2, IN = 3, MOVE = 4;
+const depots = (D.depots || []).map((d, i) => ({ i, name: d.name, l: d.l != null ? d.l : -1, x: px(d.lon), y: py(d.lat), cap: 0, rgb: '96,108,124' }));
+const depotRun = new Map((D.depotRuns || []).map(r => [r[0] + '|' + r[1], geoms[r[2]]]));
+const nearDepot = new Map();
+function depotFor(st, line) {
+  const key = st + '|' + line.i;
+  if (!nearDepot.has(key)) { const s = stations[st]; let best = null, bd = 15000 ** 2; for (const d of depots) { if (d.l >= 0 && d.l !== line.i) continue; const v = (d.x - s.x) ** 2 + (d.y - s.y) ** 2; if (v < bd) { bd = v; best = d; } } nearDepot.set(key, best); }
+  return nearDepot.get(key);
+}
+const straight = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }; };
+function runTo(dep, st, back) {
+  const g = depotRun.get(dep.i + '|' + st); if (g) return { g, rev: back, secs: g.cum[g.n - 1] / DEAD + 60 };
+  const gl = back ? straight(stations[st], dep) : straight(dep, stations[st]); return { g: gl, rev: false, secs: gl.cum[1] * 1.3 / DEAD + 120 };
+}
+function workings(trips) {
+  const out = [];
+  for (const head of trips) {
+    if (head.prev) continue;
+    const segs = [], dep = head.p.o ? depotFor(head.p.s[0], head.p.line) : null;
+    const add = s => { if (s.t1 > s.t0) segs.push(s); };
+    const goOut = tr => { const R = runTo(dep, tr.p.s[0], false); add({ k: OUT, t0: tr.start - PREP - R.secs, t1: tr.start - PREP, run: R, tr }); add({ k: WAIT, t0: tr.start - PREP, t1: tr.start, tr }); };
+    const goIn = tr => { const R = runTo(dep, tr.p.s[tr.p.s.length - 1], true); add({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, tr }); };
+    if (dep) goOut(head); else add({ k: WAIT, t0: head.start - 60, t1: head.start, tr: head, fade: 1 });
+    for (let tr = head; tr; tr = tr.next) {
+      add({ k: RUN, t0: tr.start, t1: tr.end, tr });
+      const nx = tr.next;
+      if (!nx) { if (dep && tr.p.e) goIn(tr); else add({ k: WAIT, t0: tr.end, t1: tr.end + 45, tr, fade: -1, done: 1 }); break; }
+      const gap = nx.start - tr.end;
+      if (dep && gap > Math.max(WAIT_MAX, runTo(dep, tr.p.s[tr.p.s.length - 1], true).secs + runTo(dep, nx.p.s[0], false).secs + PREP + 1800)) { goIn(tr); goOut(nx); continue; }
+      const a = pointAt(tr.p.g, tr.p.d[tr.p.d.length - 1]), b = pointAt(nx.p.g, nx.p.d[0]), far = Math.hypot(b.x - a.x, b.y - a.y);
+      const secs = far > 40 ? Math.min(far * 1.3 / DEAD + 60, Math.max(gap, 0)) : 0;
+      if (secs) add({ k: MOVE, t0: tr.end, t1: tr.end + secs, run: { g: straight(a, b), rev: false, secs }, tr: nx });
+      add({ k: WAIT, t0: tr.end + secs, t1: nx.start, tr: nx });
+    }
+    if (segs.length) out.push({ segs, dep, line: head.p.line, t0: segs[0].t0, t1: segs[segs.length - 1].t1, slot: out.length % 4 });
+  }
+  return out.sort((a, b) => a.t0 - b.t0);
+}
+let capsFor = null;
+function depotCaps(day) {
+  if (capsFor !== null || !depots.length) return; capsFor = day;
+  const mix = depots.map(() => new Map()), ev = [], n = depots.map(() => 0);
+  for (let d = day - 1; d <= day + 1; d++) for (const w of tripsFor(d).buses) {
+    if (!w.dep) continue;
+    mix[w.dep.i].set(w.line, (mix[w.dep.i].get(w.line) || 0) + 1);
+    let a = null, b = 0;
+    for (const sg of w.segs) { if (a !== null && sg.t0 > b + 1) { ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + b, -1, w.dep.i]); a = null; } if (a === null) a = sg.t0; b = sg.t1; }
+    if (a !== null) ev.push([d * 86400 + a, 1, w.dep.i], [d * 86400 + b, -1, w.dep.i]);
+  }
+  ev.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  for (const [, s, i] of ev) { n[i] += s; if (n[i] > depots[i].cap) depots[i].cap = n[i]; }
+  depots.forEach((dp, i) => { let best = null; for (const [l, c] of mix[i]) if (!best || c > mix[i].get(best)) best = l; if (best) dp.rgb = best.rgb; });
+  baseDirty = true;
+}
+const yard = d => { const cols = Math.max(12, Math.round(Math.sqrt(6 * d.cap))), rows = Math.max(1, Math.ceil(d.cap / cols)); return { cols, rows, w: cols * 4, h: rows * 15 }; };
 function link(trips) {
   const waiting = new Map(), key = (st, l) => st + '|' + l;
   for (const tr of trips.slice().sort((a, b) => a.end - b.end)) {
@@ -118,20 +180,44 @@ function progress(p, tau) {
   return { s: p.d[lo] + f * (p.d[lo + 1] - p.d[lo]), h: lo, moving };
 }
 function vehiclesAt(sim) {
-  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [], count = lines.map(() => 0);
+  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, out = [], count = lines.map(() => 0), bus = { run: 0, wait: 0, dead: 0 }, away = depots.map(() => 0);
+  depotCaps(day);
   for (const [dk, t] of [[day - 1, secs + 86400], [day, secs]]) {
-    for (const tr of tripsFor(dk)) {
+    const trips = tripsFor(dk);
+    for (const tr of trips) {
       if (tr.start - TURN - 120 > t) break;
+      if (isBus(tr)) continue;
       const from = tr.prev ? Math.min(tr.prev.end, tr.start) : tr.start - 60, to = tr.next ? tr.end : tr.end + 45;
       if (t < from || t >= to) continue;
       const line = tr.p.line; if (!line.group.on) continue;
       const pr = progress(tr.p, t - tr.start), pt = pointAt(tr.p.g, pr.s);
       const alpha = t < tr.start && !tr.prev ? 1 + (t - tr.start) / 60 : t > tr.end && !tr.next ? 1 - (t - tr.end) / 45 : 1;
       if (t >= tr.start && t < tr.end) count[line.i]++;
-      out.push({ tr, t, s: pr.s, h: pr.h, moving: pr.moving, x: pt.x, y: pt.y, alpha: Math.min(Math.max(alpha, 0), 1), state: t < tr.start ? 'waiting' : t >= tr.end ? 'done' : 'running' });
+      out.push({ tr, t, g: tr.p.g, dir: 1, s: pr.s, h: pr.h, moving: pr.moving, x: pt.x, y: pt.y, alpha: Math.min(Math.max(alpha, 0), 1), state: t < tr.start ? 'waiting' : t >= tr.end ? 'done' : 'running' });
+    }
+    for (const w of trips.buses) {
+      if (w.t0 > t) break;
+      if (t >= w.t1) continue;
+      const S = w.segs; let lo = 0, hi = S.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (S[m].t0 <= t) lo = m; else hi = m - 1; }
+      const sg = S[lo]; if (t >= sg.t1) continue;
+      if (w.dep) away[w.dep.i]++;
+      if (!w.line.group.on) continue;
+      const tr = sg.tr, v = { tr, w, sg, t, dir: 1, alpha: 1 };
+      if (sg.k === RUN) { const pr = progress(tr.p, t - tr.start); Object.assign(v, { g: tr.p.g, s: pr.s, h: pr.h, moving: pr.moving, state: 'running' }); count[w.line.i]++; bus.run++; }
+      else if (sg.k === WAIT) {
+        Object.assign(v, { g: tr.p.g, s: sg.done ? tr.p.d[tr.p.d.length - 1] : tr.p.d[0] - 14 - w.slot * 15, state: sg.done ? 'done' : 'waiting' });
+        if (sg.fade) v.alpha = sg.fade > 0 ? (t - sg.t0) / (sg.t1 - sg.t0) : 1 - (t - sg.t0) / (sg.t1 - sg.t0);
+        bus.wait++;
+      } else {
+        let f = (t - sg.t0) / (sg.t1 - sg.t0); f = f * f * (3 - 2 * f); const L = sg.run.g.cum[sg.run.g.n - 1];
+        Object.assign(v, { g: sg.run.g, s: sg.run.rev ? L * (1 - f) : L * f, dir: sg.run.rev ? -1 : 1, state: 'dead' }); bus.dead++;
+      }
+      const pt = pointAt(v.g, v.s); v.x = pt.x; v.y = pt.y; out.push(v);
     }
   }
-  out.count = count;
+  bus.park = depots.reduce((n, d) => n + Math.max(d.cap - away[d.i], 0), 0);
+  out.count = count; out.bus = bus; out.away = away;
   return out;
 }
 
@@ -188,6 +274,8 @@ function drawBase() {
   const lw = Math.min(Math.max(5 * k, 2.2), 6);
   lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = '#ffffff'; c.lineWidth = (lw + 2) / k; c.stroke(linePaths[i]); });
   lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = lw / k; c.stroke(linePaths[i]); });
+  const busOn = groups.some(g => g.kind === 'bus' && g.on);
+  if (busOn) { c.fillStyle = '#e2ddd0'; c.strokeStyle = '#a8a08e'; c.lineWidth = 1 / k; for (const d of depots) if (d.cap) { const y = yard(d); c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); } }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   const r = Math.min(Math.max(k * 40, 1.6), 5);
   stations.forEach((s, i) => {
@@ -206,6 +294,7 @@ function drawBase() {
     }
   };
   c.textBaseline = 'middle'; c.lineJoin = 'round';
+  if (busOn && k > 0.011) for (const d of depots) if (d.cap) label(d.name + ' depot', sx(d.x), sy(d.y) + Math.max(yard(d).h * k / 2, 4) + 10, '600 11px system-ui, Segoe UI, Arial, sans-serif', '#5a4a2a', '#f3f1ea', 0);
   if (k > 0.06) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind !== 'rail' && groups[s.group].kind !== 'bus') label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 7); });
   if (k > 0.1) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind === 'rail') label(s.name, sx(s.x), sy(s.y), '11px system-ui, Segoe UI, Arial, sans-serif', '#3d424a', '#ffffff', 7); });
   const minRank = k < 0.005 ? 1 : k < 0.03 ? 2 : k < 0.12 ? 3 : 4;
@@ -216,27 +305,36 @@ let vehicles = [];
 function drawVehicles() {
   const k = view.k;
   ctx.lineJoin = 'round';
+  if (groups.some(g => g.kind === 'bus' && g.on)) for (const d of depots) {
+    if (!d.cap) continue;
+    const y = yard(d), n = Math.min(Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0), y.cols * y.rows), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
+    if (!n || sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) continue;
+    ctx.fillStyle = 'rgba(' + d.rgb + ',0.85)';
+    if (k * 4 < 1.2) { const rows = Math.ceil(n / y.cols); ctx.fillRect(sx(x0), sy(y0 + y.h - rows * 15), Math.max(y.w * k, 2), Math.max(rows * 15 * k, 1.5)); continue; }
+    for (let i = 0; i < n; i++) { const cl = i % y.cols, r = y.rows - 1 - Math.floor(i / y.cols); ctx.fillRect(sx(x0 + cl * 4 + 0.7), sy(y0 + r * 15 + 1.5), 2.55 * k, 12 * k); }
+  }
   const dot = Math.min(Math.max(k * 60, 2.4), 4);
   if (k < 0.15) for (const v of vehicles) {
-    if (v.tr.p.line.group.kind !== 'bus') continue;
+    if (!v.w) continue;
     const X = sx(v.x), Y = sy(v.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue;
-    ctx.globalAlpha = v.alpha; ctx.fillStyle = 'rgb(' + v.tr.p.line.rgb + ')'; ctx.fillRect(X - dot / 2, Y - dot / 2, dot, dot);
-    ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(27,29,33,0.55)'; ctx.strokeRect(X - dot / 2, Y - dot / 2, dot, dot);
+    const rgb = 'rgb(' + v.w.line.rgb + ')';
+    ctx.globalAlpha = v.alpha * (v.state === 'waiting' ? 0.55 : 1); ctx.fillStyle = v.state === 'dead' ? '#ffffff' : rgb; ctx.fillRect(X - dot / 2, Y - dot / 2, dot, dot);
+    ctx.lineWidth = v.state === 'dead' ? 1 : 0.6; ctx.strokeStyle = v.state === 'dead' ? rgb : 'rgba(27,29,33,0.55)'; ctx.strokeRect(X - dot / 2, Y - dot / 2, dot, dot);
   }
   ctx.globalAlpha = 1;
-  const order = vehicles.filter(v => v.tr.p.line.group.kind === 'bus').concat(vehicles.filter(v => v.tr.p.line.group.kind !== 'bus'));
+  const order = vehicles.filter(v => v.w).concat(vehicles.filter(v => !v.w));
   for (const v of order) {
-    if (k < 0.15 && v.tr.p.line.group.kind === 'bus') continue;
-    const l = v.tr.p.line, N = l.sections, low = k < 0.05;
+    if (k < 0.15 && v.w) continue;
+    const l = v.w ? v.w.line : v.tr.p.line, N = l.sections, low = k < 0.05, dead = v.state === 'dead';
     const U = Math.max(l.length * k, low ? 4 : 7), Wd = low ? 3 : Math.min(Math.max(3.2 * k, 3.5), 9);
     const X0 = sx(v.x), Y0 = sy(v.y); if (X0 < -U || X0 > W + U || Y0 < -U || Y0 > H + U) continue;
-    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(v.tr.p.g, v.s + (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
-    ctx.globalAlpha = v.alpha; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i <= N; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(v.g, v.s + v.dir * (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
+    ctx.globalAlpha = v.alpha * (v.w && v.state === 'waiting' ? 0.6 : 1); ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i <= N; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.lineCap = 'round';
     if (low) { ctx.lineWidth = Wd + 1.6; ctx.strokeStyle = '#ffffff'; ctx.stroke(); ctx.lineWidth = Wd; ctx.strokeStyle = 'rgb(' + l.rgb + ')'; ctx.stroke(); ctx.globalAlpha = 1; continue; }
     ctx.lineWidth = Wd + 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
-    ctx.lineWidth = Wd; ctx.strokeStyle = '#1b1d21'; ctx.stroke();
-    ctx.lineWidth = Wd - 2; ctx.strokeStyle = 'rgb(' + l.rgb + ')'; ctx.stroke();
+    ctx.lineWidth = Wd; ctx.strokeStyle = dead ? 'rgb(' + l.rgb + ')' : '#1b1d21'; ctx.stroke();
+    ctx.lineWidth = Wd - 2; ctx.strokeStyle = dead ? '#ffffff' : 'rgb(' + l.rgb + ')'; ctx.stroke();
     if (U / N >= 11) for (let i = 1; i < N; i++) {
       const dx = pts[i + 1][0] - pts[i - 1][0], dy = pts[i + 1][1] - pts[i - 1][1], L = Math.hypot(dx, dy) || 1, w = Wd / 2 - 1;
       ctx.beginPath(); ctx.moveTo(pts[i][0] + dy / L * w, pts[i][1] - dx / L * w); ctx.lineTo(pts[i][0] - dy / L * w, pts[i][1] + dx / L * w); ctx.lineCap = 'butt'; ctx.lineWidth = 1.2; ctx.strokeStyle = '#1b1d21'; ctx.stroke();
@@ -253,7 +351,8 @@ el('notes').innerHTML = (D.meta.notes || []).map(n => '<li>' + n + '</li>').join
 el('credit').textContent = D.meta.credit;
 el('legend').innerHTML = groups.map(g => {
   const rows = lines.filter(l => l.group === g).map(l => '<tr><td><span class="sw" style="background:rgb(' + l.rgb + ')"></span>' + l.name + '</td><td class="n" id="ln-' + l.i + '">0</td></tr>').join('');
-  return '<div class="sect"><label class="check"><input type="checkbox" data-group="' + g.i + '" checked><span>' + g.name + '</span></label><table>' + rows + '</table></div>';
+  const status = g.kind === 'bus' ? '<table class="status">' + [['run', 'In service'], ['wait', 'Waiting at a stop'], ['dead', 'Running empty'], ['park', 'In a depot']].map(r => '<tr><td>' + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('') + '</table>' : '';
+  return '<div class="sect"><label class="check"><input type="checkbox" data-group="' + g.i + '" checked><span>' + g.name + '</span></label><table>' + rows + '</table>' + status + '</div>';
 }).join('');
 el('legend').addEventListener('change', e => { const g = groups[+e.target.dataset.group]; if (!g) return; g.on = e.target.checked; baseDirty = true; });
 
@@ -267,6 +366,7 @@ function updatePanel() {
   el('now').setAttribute('aria-pressed', live);
   for (const b of el('speeds').children) b.setAttribute('aria-pressed', !live && +b.dataset.speed === speed);
   lines.forEach(l => { el('ln-' + l.i).textContent = vehicles.count ? vehicles.count[l.i] : 0; });
+  if (vehicles.bus && el('bs-run')) for (const k of ['run', 'wait', 'dead', 'park']) el('bs-' + k).textContent = vehicles.bus[k].toLocaleString('en-GB');
   const b = borrowed.get(Math.floor(sim / DAY)) || [];
   el('borrowed').textContent = b.length ? 'No timetable for this date in the data for ' + b.join(', ') + ': that day’s is shown.' : '';
 }
@@ -310,7 +410,9 @@ window.addEventListener('resize', () => { const had = W && H; resize(); if (!had
 
 function describe(v) {
   const p = v.tr.p, name = i => stations[p.s[i]].name, at = i => hhmm(v.tr.start + p.t[i]), last = p.s.length - 1;
-  const head = '<b>' + (p.n ? (/^\w{1,5}$/.test(p.n) ? 'Bus ' + p.n : p.n) : p.line.name) + '</b>' + (p.s[0] === p.s[last] ? '' : ' to ' + name(last)) + (p.n ? '<br>' + p.line.name : '');
+  const num = p.n ? (/^\w{1,5}$/.test(p.n) ? 'Bus ' + p.n : p.n) : p.line.name;
+  if (v.state === 'dead') return '<b>' + p.line.name + '</b>, not in service<br>' + (v.sg.k === OUT ? 'Out of ' + v.w.dep.name + ' depot for the ' + at(0) + ' ' + num + ' from ' + name(0) : v.sg.k === IN ? 'Back to ' + v.w.dep.name + ' depot after the ' + hhmm(v.tr.start) + ' ' + num : 'To ' + name(0) + ' for the ' + at(0) + ' ' + num);
+  const head = '<b>' + num + '</b>' + (p.s[0] === p.s[last] ? '' : ' to ' + name(last)) + (p.n ? '<br>' + p.line.name : '');
   if (v.state === 'waiting') return head + '<br>At ' + name(0) + ', departs ' + at(0);
   if (v.state === 'done') return head + '<br>Arrived at ' + name(last) + ' ' + at(last);
   if (v.moving) return head + '<br>Next stop ' + name(v.h + 1) + ' ' + at(v.h + 1);
@@ -319,6 +421,10 @@ function describe(v) {
 function showTip(mx, my) {
   let html = '', bd = 12 * 12;
   for (const v of vehicles) { const dx = sx(v.x) - mx, dy = sy(v.y) - my, d2 = dx * dx + dy * dy; if (d2 < bd) { bd = d2; html = describe(v); } }
+  if (!html && groups.some(g => g.kind === 'bus' && g.on)) for (const d of depots) {
+    if (!d.cap) continue; const y = yard(d);
+    if (Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4) html = '<b>' + d.name + ' depot</b><br>' + Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0) + ' of ' + d.cap + ' buses in';
+  }
   if (!html) { let sd = 8 * 8; stations.forEach((s, i) => { if (!usedStations.has(i) || !groups[s.group].on || (groups[s.group].kind === 'bus' && view.k <= 0.6)) return; const dx = sx(s.x) - mx, dy = sy(s.y) - my, d2 = dx * dx + dy * dy; if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b>'; } }); }
   if (!html) { tip.style.display = 'none'; return; }
   tip.innerHTML = html; tip.style.display = 'block';
