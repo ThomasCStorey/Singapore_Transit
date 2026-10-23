@@ -84,7 +84,7 @@
   </div>
 
   <div class="sect">
-    <h2>MRT and LRT</h2>
+    <h2>MRT, LRT, Sentosa Express and cable cars</h2>
     <table id="trainstate"></table>
     <table id="trains" style="margin-top:6px"></table>
   </div>
@@ -104,7 +104,7 @@
 <div id="zoom"><button type="button" id="zin" aria-label="Zoom in">+</button><button type="button" id="zout" aria-label="Zoom out">&minus;</button><button type="button" id="zfit">Fit</button></div>
 <div id="tip" role="status"></div>
 
-<script src="sg-data.js?v=b09a2ece"></script>
+<script src="sg-data.js?v=80a73965"></script>
 <script>
 (function () {
 'use strict';
@@ -158,9 +158,9 @@ const depots = D.depots.map((d, i) => ({ i, name: d.name, op: d.op, x: px(d.lon)
 const stops = D.stops.map(s => ({ code: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
 const services = D.services.map(s => ({ n: s.n, op: s.op, depot: depots[s.depot], guess: !!s.guess, group: s.n.replace(/[ABCT]$/, '') }));
 const pats = D.patterns.map(p => ({ svc: services[p.v], g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, w: p.w, straight: !!p.x, r: p.r, dur: p.t[p.t.length - 1] }));
-const RL = D.rail.lines.map(l => ({ name: l.name, short: l.short, rgb: l.colour, cars: l.cars, length: l.length }));
+const RL = D.rail.lines.map(l => ({ name: l.name, short: l.short, rgb: l.colour, cars: l.cars, length: l.length, cable: !!l.cable }));
 const rstations = D.rail.stations.map(s => ({ id: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
-const rpats = D.rail.patterns.map(p => ({ line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, win: p.win, dur: p.t[p.t.length - 1] }));
+const rpats = D.rail.patterns.map(p => ({ line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, fixed: !!p.fixed, win: p.win, dur: p.t[p.t.length - 1] }));
 const startOf = p => pointAt(p.g, p.d[0]), endOf = p => pointAt(p.g, p.d[p.d.length - 1]);
 const roadRun = (g, rev) => ({ g, rev, secs: g.cum[g.n - 1] / DEAD_SPEED + 60 });
 const lineRun = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, rev: false, secs: len * DEAD_DETOUR / DEAD_SPEED + 120 }; };
@@ -182,9 +182,9 @@ for (const [gk, list] of groups) {
 const dayType = dayKey => { const dow = new Date(dayKey * DAY).getUTCDay(); return dow === 6 ? 1 : dow === 0 ? 2 : 0; };
 const DAYTYPE_NAMES = ['Monday to Friday', 'Saturday', 'Sunday'];
 const factor = (dt, t) => { t %= 86400; let f = 1; for (const [from, k] of BANDS[dt]) if (t >= from) f = k; return f; };
-function departures(first, last, h, dt) {
+function departures(first, last, h, dt, fixed) {
   const out = []; let t = first;
-  while (t <= last) { out.push(t); t += Math.max(120, h * factor(dt, t)); }
+  while (t <= last) { out.push(t); t += fixed ? h : Math.max(120, h * factor(dt, t)); }
   if (out.length && last - out[out.length - 1] > h * 0.4) out.push(last);
   return out;
 }
@@ -303,7 +303,7 @@ const railPlans = new Map();
 function railFor(dt) {
   if (railPlans.has(dt)) return railPlans.get(dt);
   const trips = [];
-  for (const p of rpats) for (const start of departures(p.win[0], p.win[1], p.h, dt)) trips.push({ p, start, end: start + p.dur });
+  for (const p of rpats) for (const start of departures(p.win[0], p.win[1], p.h, dt, p.fixed)) trips.push({ p, start, end: start + p.dur });
   trips.sort((a, b) => a.start - b.start);
   const waiting = new Map(), key = (st, li) => st + '|' + li;
   for (const tr of trips.slice().sort((a, b) => a.end - b.end)) { const k = key(tr.p.s[tr.p.s.length - 1], tr.p.li); if (!waiting.has(k)) waiting.set(k, []); waiting.get(k).push(tr); }
@@ -520,8 +520,9 @@ function drawBase() {
     c.fillStyle = '#dde2e8'; c.strokeStyle = '#97a1ab';
     if (trainYards) for (const Y of railYards) if (Y.n) { c.fillRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); c.strokeRect(Y.cx - Y.w / 2 - 5, Y.cy - Y.h / 2 - 5, Y.w + 10, Y.h + 10); }
     const w = Math.min(Math.max(5 * k, 1.6), 6);
-    c.strokeStyle = '#ffffff'; c.lineWidth = (w + 2) / k; for (const p of railPaths) c.stroke(p);
-    RL.forEach((l, i) => { c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = w / k; c.stroke(railPaths[i]); });
+    RL.forEach((l, i) => { c.strokeStyle = '#ffffff'; c.lineWidth = ((l.cable ? w * 0.4 : w) + 2) / k; c.stroke(railPaths[i]); });
+    RL.forEach((l, i) => { c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = (l.cable ? w * 0.4 : w) / k; c.stroke(railPaths[i]); });
+    if (w > 2.4) RL.forEach((l, i) => { if (l.cable) return; c.strokeStyle = '#ffffff'; c.lineWidth = w * 0.3 / k; c.stroke(railPaths[i]); });
   }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (show.trains && k > 0.02) {
@@ -612,9 +613,11 @@ function drawDynamic() {
   }
   if (show.trains) for (const tr of trains) {
     const l = tr.tr.p.line, N = l.cars, low = k < 0.06, dead = tr.kind === 'dead';
+    if (l.cable) { const X = sx(tr.x), Y = sy(tr.y), r = Math.min(Math.max(1.6 * k, 1.5), 5); if (X < -r || X > W + r || Y < -r || Y > H + r) continue; ctx.globalAlpha = tr.alpha; ctx.fillStyle = 'rgb(' + l.rgb + ')'; ctx.fillRect(X - r, Y - r, 2 * r, 2 * r); ctx.lineWidth = 1; ctx.strokeStyle = '#ffffff'; ctx.strokeRect(X - r, Y - r, 2 * r, 2 * r); ctx.globalAlpha = 1; continue; }
     const U = Math.max(l.length * k, low ? 4 : 7), Wd = low ? 3 : Math.min(Math.max(3.2 * k, 3.5), 9);
     { const X = sx(tr.x), Y = sy(tr.y); if (X < -U || X > W + U || Y < -U || Y > H + U) continue; }
-    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(tr.g, tr.s + (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
+    const ro = Math.min(Math.max(5 * k, 1.6), 6) * 0.33 / k;
+    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(tr.g, tr.s + (U / 2 - U * i / N) / k); pts.push([sx(q.x + Math.sin(q.a) * ro), sy(q.y - Math.cos(q.a) * ro)]); }
     ctx.globalAlpha = tr.alpha; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i <= N; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     if (low) {
       ctx.lineCap = 'round'; ctx.lineWidth = Wd + 1.6; ctx.strokeStyle = dead ? 'rgb(' + l.rgb + ')' : '#ffffff'; ctx.stroke();
@@ -638,7 +641,7 @@ const sw = (rgb, cls) => '<span class="sw ' + (cls || '') + '" style="background
 el('busstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Waiting at a terminal', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['ich', 'Parked at an interchange', sw('168,160,142', 'dim')], ['park', 'Parked in a depot', sw('168,160,142')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('');
 el('busops').innerHTML = OPS.map((o, i) => '<tr><td>' + sw(o.rgb) + o.name + '</td><td class="n" id="op-' + i + '">0</td></tr>').join('');
 el('trainstate').innerHTML = [['run', 'In service', sw('60,64,72')], ['wait', 'Standing at a terminus', sw('60,64,72', 'dim')], ['dead', 'Running to or from a depot', sw('60,64,72', 'hollow')], ['park', 'Stabled in a depot', sw('151,161,171')]].map(r => '<tr><td>' + r[2] + r[1] + '</td><td class="n" id="ts-' + r[0] + '">0</td></tr>').join('');
-el('trains').innerHTML = RL.map((l, i) => '<tr><td>' + sw(l.rgb, 'line') + l.name + '</td><td class="n" id="rl-' + i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains out on each line, of ' + RL.map((l, li) => rdepots.reduce((s, d) => s + d.cap[li], 0)).map((n, li) => n + ' ' + RL[li].short).join(', ') + '.</td></tr>';
+el('trains').innerHTML = RL.map((l, i) => '<tr><td>' + sw(l.rgb, 'line') + l.name + '</td><td class="n" id="rl-' + i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains out on each line, of ' + RL.map((l, li) => rdepots.reduce((s, d) => s + d.cap[li], 0)).map((n, li) => n ? n + ' ' + RL[li].short : '').filter(Boolean).join(', ') + '.</td></tr>';
 el('depots').innerHTML = depots.map(d => '<tr><td>' + sw(OPS[d.op].rgb) + d.name + '</td><td class="n" id="dp-' + d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of the most each depot holds at once.</td></tr>'
   + railYards.filter(Y => Y.n).map(Y => '<tr><td>' + Y.groups.map(g => sw(RL[g.li].rgb, 'line')).join('') + Y.d.name + '</td><td class="n" id="rd-' + Y.d.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Trains stabled now, of those each depot has out at the busiest time.</td></tr>';
 el('ichs').innerHTML = ICH.map(I => '<tr><td>' + I.name.replace(/ Interchange$/, '') + '</td><td class="n" id="ic-' + I.i + '">0</td></tr>').join('') + '<tr><td colspan="2" class="small">Buses parked now, of the berths.</td></tr>';
@@ -748,7 +751,7 @@ function describeBus(b) {
 function describeTrain(t) {
   const p = t.tr.p, name = i => rstations[p.s[i]].name, at = i => hhmm(t.tr.start + p.t[i]), last = p.s.length - 1;
   if (t.kind === 'dead') return '<b>' + p.line.name + '</b>, not in service<br>' + (t.home ? 'Back to ' + t.tr.dep.name + ' after arriving at ' + name(last) + ' ' + at(last) : 'Out of ' + t.tr.dep.name + ' for the ' + at(0) + ' from ' + name(0));
-  const head = '<b>' + p.line.name + '</b> ' + (p.loop ? 'loop from ' + name(0) : 'to ' + name(last)) + '<br>' + p.line.cars + (p.line.cars === 1 ? ' car' : ' cars');
+  const head = '<b>' + p.line.name + '</b> ' + (p.loop ? 'loop from ' + name(0) : 'to ' + name(last)) + '<br>' + (p.line.cable ? 'Cable car cabin' : p.line.cars + (p.line.cars === 1 ? ' car' : ' cars'));
   if (t.state === 'waiting') return head + '<br>At ' + name(0) + ', departs ' + at(0);
   if (t.state === 'done') return head + '<br>Arrived at ' + name(last) + ' ' + at(last);
   if (t.moving) return head + '<br>Next stop ' + name(t.h + 1) + ' ' + at(t.h + 1);

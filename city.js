@@ -45,7 +45,7 @@ function hopGeom(h) {
 }
 
 const groups = D.groups.map((g, i) => ({ i, name: g.name, kind: g.kind, on: true }));
-const lines = D.lines.map((l, i) => ({ i, name: l.name, rgb: l.colour, group: groups[l.group], length: l.length, sections: l.sections }));
+const lines = D.lines.map((l, i) => ({ i, name: l.name, rgb: l.colour, vrgb: l.vc || l.colour, group: groups[l.group], length: l.length, sections: l.sections }));
 const stations = D.stations.map(s => ({ name: s[0], x: px(s[1] / Q), y: py(s[2] / Q), group: s[3] }));
 const sums = a => { let c = 0; return a.map(v => c += v); };
 const paths = (D.paths || []).map(q => ({ g: geoms[q.g], s: sums(q.ds), d: sums(q.dd), n: q.n }));
@@ -94,7 +94,13 @@ function tripsFor(dk) {
 const isBus = tr => tr.p.line.group.kind === 'bus';
 const PREP = 300, WAIT_MAX = 2400, DAY0 = 3 * 3600, OUT = 0, WAIT = 1, RUN = 2, IN = 3, MOVE = 4;
 const SPEED = { bus: 25 / 3.6, rail: 40 / 3.6, subway: 20 / 3.6, tram: 20 / 3.6 }, REACH = { bus: 15000, rail: 40000, subway: 5000, tram: 10000 };
-const depots = (D.depots || []).map((d, i) => ({ i, name: d.name, ls: d.ls || [], k: d.k || 'bus', x: px(d.lon), y: py(d.lat), cap: 0, rgb: '96,108,124', len: 12, grp: null }));
+const grow = (b, x, y) => b ? { x0: Math.min(b.x0, x), y0: Math.min(b.y0, y), x1: Math.max(b.x1, x), y1: Math.max(b.y1, y) } : { x0: x, y0: y, x1: x, y1: y };
+const depots = (D.depots || []).map((d, i) => {
+  const x = px(d.lon), y = py(d.lat), slots = [], site = d.site != null ? geoms[d.site] : null, tracks = (d.tracks || []).map(g => geoms[g]);
+  for (let j = 0; d.slots && j < d.slots.length; j += 3) slots.push([x + d.slots[j], y - d.slots[j + 1], -d.slots[j + 2] * Math.PI / 180]);
+  let bb = null; for (const s of slots.slice(0, d.inside || slots.length)) bb = grow(bb, s[0], s[1]); for (const g of tracks.concat(site ? [site] : [])) for (let j = 0; j < g.n; j++) bb = grow(bb, g.x[j], g.y[j]);
+  return { i, name: d.name, ls: d.ls || [], k: d.k || 'bus', x, y, slots, site, tracks, bb, cap: 0, rgb: '96,108,124', len: 12, grp: null };
+});
 const depotRun = new Map((D.depotRuns || []).map(r => [r[0] + '|' + r[1], geoms[r[2]]]));
 const nearDepot = new Map();
 function depotFor(st, line) {
@@ -145,7 +151,7 @@ function depotCaps(day) {
   }
   ev.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
   for (const [, s, i] of ev) { n[i] += s; if (n[i] > depots[i].cap) depots[i].cap = n[i]; }
-  depots.forEach((dp, i) => { let best = null; for (const [l, c] of mix[i]) { if (!best || c > mix[i].get(best)) best = l; dp.len = Math.max(dp.len, l.length); } if (best) { dp.rgb = best.rgb; dp.grp = best.group; } });
+  depots.forEach((dp, i) => { let best = null; for (const [l, c] of mix[i]) { if (!best || c > mix[i].get(best)) best = l; dp.len = Math.max(dp.len, l.length); } if (best) { dp.rgb = best.vrgb; dp.grp = best.group; } });
   baseDirty = true;
 }
 function yard(d) {
@@ -153,6 +159,9 @@ function yard(d) {
   const rows = Math.min(Math.max(d.cap, 1), 8), cols = Math.max(1, Math.ceil(d.cap / 8)); return { cols, rows, w: cols * (d.len + 10), h: rows * 6, sw: d.len + 10, sh: 6, bw: d.len, bl: 3.2, across: false };
 }
 const depotOn = d => d.cap && d.grp && d.grp.on;
+const slotBox = d => { if (d.sbCap !== d.cap) { let b = null; const h = (d.k === 'bus' ? 12 : d.len) / 2; for (let i = 0; i < Math.min(d.cap, d.slots.length); i++) { const s = d.slots[i]; b = grow(grow(b, s[0] - h, s[1] - h), s[0] + h, s[1] + h); } d.sb = b || depotBox(d); d.sbCap = d.cap; } return d.sb; };
+const both = d => { const a = depotBox(d), b = slotBox(d); return { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) }; };
+const depotBox = d => { if (d.bb) return d.bb; const y = yard(d); return { x0: d.x - y.w / 2 - 6, y0: d.y - y.h / 2 - 6, x1: d.x + y.w / 2 + 6, y1: d.y + y.h / 2 + 6 }; };
 function link(trips) {
   const waiting = new Map(), key = (st, l) => st + '|' + l;
   for (const tr of trips.slice().sort((a, b) => a.end - b.end)) {
@@ -226,12 +235,36 @@ const view = { cx: 0, cy: 0, k: 0.02 };
 const sx = x => (x - view.cx) * view.k + W / 2, sy = y => (y - view.cy) * view.k + H / 2;
 const path = (list, close) => { const p = new Path2D(); for (const a of list) { const g = decode(a); p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); if (close) p.closePath(); } return p; };
 const B = D.base, waterPath = path(B.water, true), islandPath = path(B.islands, true), riverPath = path(B.rivers), minorPath = path(B.roadsMinor), majorPath = path(B.roadsMajor), railPath = path(B.rail);
-const linePaths = lines.map(l => {
+let streetPath = null;
+setTimeout(() => { const s = document.createElement('script'); s.src = 'streets.js?v=' + encodeURIComponent(D.meta.built); s.onload = () => { if (window.CITY_STREETS) { streetPath = path(window.CITY_STREETS); baseDirty = true; } }; document.head.appendChild(s); }, 300);
+const lineGeoms = lines.map(l => {
   if (l.group.kind === 'rail' || l.group.kind === 'bus') return null;
-  const p = new Path2D(), done = new Set();
-  for (const pt of pats) { if (pt.line !== l || done.has(pt.g)) continue; done.add(pt.g); const g = pt.g; p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); }
-  return p;
+  const done = new Set(), out = [];
+  for (const pt of pats) { if (pt.line !== l || done.has(pt.g)) continue; done.add(pt.g); out.push(pt.g); }
+  return out;
 });
+const trackW = k => Math.min(Math.max(2.6 * k, 1.3), 3.4);
+function keepLeft(kind, k) {
+  if (kind === 'bus') return Math.max(1.8, 1.2 / k);
+  if (kind === 'rail') return (k < 0.3 ? 1.6 : Math.max(0, 1.6 * (0.6 - k) / 0.3)) / k;
+  const o = trackW(k) * 0.9 / k;
+  return kind === 'tram' ? Math.max(1.75, o) : o;
+}
+function offsetPath(p, g, o) {
+  for (let i = 0; i < g.n; i++) {
+    let nx = 0, ny = 0, c = 0;
+    if (i > 0) { const dx = g.x[i] - g.x[i - 1], dy = g.y[i] - g.y[i - 1], L = Math.hypot(dx, dy) || 1; nx += dy / L; ny -= dx / L; c++; }
+    if (i < g.n - 1) { const dx = g.x[i + 1] - g.x[i], dy = g.y[i + 1] - g.y[i], L = Math.hypot(dx, dy) || 1; nx += dy / L; ny -= dx / L; c++; }
+    const L = Math.hypot(nx, ny) || 1, m = c === 2 ? Math.min(2 / L, 2) : 1, x = g.x[i] + nx / L * o * m, y = g.y[i] + ny / L * o * m;
+    if (i === 0) p.moveTo(x, y); else p.lineTo(x, y);
+  }
+}
+let trackCache = { k: -1, paths: [] };
+function trackPaths(k) {
+  if (Math.abs(trackCache.k - k) < k * 0.04) return trackCache.paths;
+  const paths = lines.map((l, i) => { if (!lineGeoms[i]) return null; const p = new Path2D(), o = keepLeft(l.group.kind, k); for (const g of lineGeoms[i]) offsetPath(p, g, o); return p; });
+  trackCache = { k, paths }; return paths;
+}
 const places = B.places.map(p => ({ name: p[0], x: px(p[1] / Q), y: py(p[2] / Q), rank: p[3] })).sort((a, b) => (a.name === D.meta.name ? -1 : 0) - (b.name === D.meta.name ? -1 : 0) || a.rank - b.rank);
 const usedStations = new Set(); for (const p of pats) for (const s of p.s) usedStations.add(s);
 const bb = D.meta.bbox, bounds = { x0: px(bb[1]), x1: px(bb[3]), y0: py(bb[2]), y1: py(bb[0]) };
@@ -260,15 +293,33 @@ function drawBase() {
   c.lineJoin = c.lineCap = 'round';
   c.fillStyle = '#c9dde8'; c.fill(waterPath); c.fillStyle = '#f3f1ea'; c.fill(islandPath);
   c.strokeStyle = '#c9dde8'; c.lineWidth = Math.max(1.4 / k, 8); c.stroke(riverPath);
-  if (k > 0.2) { c.strokeStyle = '#d6cfbf'; c.lineWidth = Math.max(11, 3 / k); c.stroke(minorPath); c.stroke(majorPath); c.strokeStyle = '#ffffff'; c.lineWidth = Math.max(8, 1.5 / k); c.stroke(minorPath); c.strokeStyle = '#fbefc9'; c.stroke(majorPath); }
-  else { c.strokeStyle = '#dbd4c4'; c.lineWidth = 0.9 / k; c.stroke(minorPath); c.strokeStyle = '#cbbf9f'; c.lineWidth = 1.4 / k; c.stroke(majorPath); }
+  if (k > 0.2) {
+    c.strokeStyle = '#d6cfbf';
+    if (streetPath) { c.lineWidth = Math.max(8, 2.4 / k); c.stroke(streetPath); }
+    c.lineWidth = Math.max(11, 3 / k); c.stroke(minorPath); c.stroke(majorPath);
+    c.strokeStyle = '#ffffff';
+    if (streetPath) { c.lineWidth = Math.max(5.5, 1.2 / k); c.stroke(streetPath); }
+    c.lineWidth = Math.max(8, 1.5 / k); c.stroke(minorPath); c.strokeStyle = '#fbefc9'; c.stroke(majorPath);
+  } else {
+    if (streetPath && k > 0.06) { c.strokeStyle = '#e4ded1'; c.lineWidth = 0.7 / k; c.stroke(streetPath); }
+    c.strokeStyle = '#dbd4c4'; c.lineWidth = 0.9 / k; c.stroke(minorPath); c.strokeStyle = '#cbbf9f'; c.lineWidth = 1.4 / k; c.stroke(majorPath);
+  }
   const rail = groups.find(g => g.kind === 'rail');
-  if (!rail || rail.on) { c.strokeStyle = '#8b8f96'; c.lineWidth = Math.min(Math.max(3 * k, 1.1), 3) / k; c.stroke(railPath); }
-  const lw = Math.min(Math.max(5 * k, 2.2), 6);
-  lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = '#ffffff'; c.lineWidth = (lw + 2) / k; c.stroke(linePaths[i]); });
-  lines.forEach((l, i) => { if (!linePaths[i] || !l.group.on) return; c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = lw / k; c.stroke(linePaths[i]); });
+  if (!rail || rail.on) {
+    c.strokeStyle = '#8b8f96';
+    if (k < 0.3) { c.lineWidth = 4.2 / k; c.stroke(railPath); c.strokeStyle = '#f3f1ea'; c.lineWidth = 1.6 / k; c.stroke(railPath); }
+    else { c.lineWidth = Math.min(Math.max(3 * k, 1.1), 3) / k; c.stroke(railPath); }
+  }
+  const tw = trackW(k), tp = trackPaths(k);
+  lines.forEach((l, i) => { if (!tp[i] || !l.group.on) return; c.strokeStyle = '#ffffff'; c.lineWidth = (tw + 1.6) / k; c.stroke(tp[i]); });
+  lines.forEach((l, i) => { if (!tp[i] || !l.group.on) return; c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = tw / k; c.stroke(tp[i]); });
   c.lineWidth = 1 / k;
-  for (const d of depots) if (depotOn(d)) { const y = yard(d); c.fillStyle = d.k === 'bus' ? '#e2ddd0' : '#dde2e8'; c.strokeStyle = d.k === 'bus' ? '#a8a08e' : '#97a1ab'; c.fillRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); c.strokeRect(d.x - y.w / 2 - 6, d.y - y.h / 2 - 6, y.w + 12, y.h + 12); }
+  for (const d of depots) if (depotOn(d)) {
+    c.fillStyle = d.k === 'bus' ? '#e2ddd0' : '#dde2e8'; c.strokeStyle = d.k === 'bus' ? '#a8a08e' : '#97a1ab';
+    if (d.site) { c.beginPath(); c.moveTo(d.site.x[0], d.site.y[0]); for (let j = 1; j < d.site.n; j++) c.lineTo(d.site.x[j], d.site.y[j]); c.closePath(); c.fill(); c.stroke(); }
+    else if (d.tracks.length) { c.lineWidth = Math.max(1.5 / k, 2); for (const g of d.tracks) { c.beginPath(); c.moveTo(g.x[0], g.y[0]); for (let j = 1; j < g.n; j++) c.lineTo(g.x[j], g.y[j]); c.stroke(); } c.lineWidth = 1 / k; }
+    else { const b = depotBox(d); c.fillRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0); c.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0); }
+  }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   const r = Math.min(Math.max(k * 40, 1.6), 5);
   stations.forEach((s, i) => {
@@ -287,7 +338,7 @@ function drawBase() {
     }
   };
   c.textBaseline = 'middle'; c.lineJoin = 'round';
-  if (k > 0.011) for (const d of depots) if (depotOn(d)) label(d.name + ' depot', sx(d.x), sy(d.y) + Math.max(yard(d).h * k / 2, 4) + 10, '600 11px system-ui, Segoe UI, Arial, sans-serif', d.k === 'bus' ? '#5a4a2a' : '#3a4652', '#f3f1ea', 0);
+  if (k > 0.011) for (const d of depots) if (depotOn(d)) { const b = !d.slots.length ? depotBox(d) : d.site ? both(d) : slotBox(d); label(d.name + ' depot', sx((b.x0 + b.x1) / 2), Math.max(sy(b.y1), sy(d.y) + 4) + 10, '600 11px system-ui, Segoe UI, Arial, sans-serif', d.k === 'bus' ? '#5a4a2a' : '#3a4652', '#f3f1ea', 0); }
   if (k > 0.06) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind !== 'rail' && groups[s.group].kind !== 'bus') label(s.name, sx(s.x), sy(s.y), '600 11px system-ui, Segoe UI, Arial, sans-serif', '#1b1d21', '#ffffff', 7); });
   if (k > 0.1) stations.forEach((s, i) => { if (usedStations.has(i) && groups[s.group].on && groups[s.group].kind === 'rail') label(s.name, sx(s.x), sy(s.y), '11px system-ui, Segoe UI, Arial, sans-serif', '#3d424a', '#ffffff', 7); });
   const minRank = k < 0.005 ? 1 : k < 0.03 ? 2 : k < 0.12 ? 3 : 4;
@@ -300,7 +351,20 @@ function drawVehicles() {
   ctx.lineJoin = 'round';
   for (const d of depots) {
     if (!depotOn(d)) continue;
-    const y = yard(d), n = Math.min(Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0), y.cols * y.rows), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
+    const parked = Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0);
+    if (d.slots.length) {
+      const b = both(d); if (!parked || sx(b.x0) > W || sy(b.y0) > H || sx(b.x1) < 0 || sy(b.y1) < 0) continue;
+      const n = Math.min(parked, d.slots.length), L = d.k === 'bus' ? 12 : d.len, Wd = d.k === 'bus' ? 2.55 : 3.2;
+      ctx.fillStyle = 'rgba(' + d.rgb + ',0.9)';
+      if (L * k < 3) { for (let i = 0; i < n; i++) ctx.fillRect(sx(d.slots[i][0]) - 1, sy(d.slots[i][1]) - 1, 2, 2); continue; }
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const [x, y, a] = d.slots[i], ca = Math.cos(a), sa = Math.sin(a), hx = ca * L / 2, hy = sa * L / 2, wx = -sa * Wd / 2, wy = ca * Wd / 2;
+        ctx.moveTo(sx(x - hx - wx), sy(y - hy - wy)); ctx.lineTo(sx(x + hx - wx), sy(y + hy - wy)); ctx.lineTo(sx(x + hx + wx), sy(y + hy + wy)); ctx.lineTo(sx(x - hx + wx), sy(y - hy + wy)); ctx.closePath();
+      }
+      ctx.fill(); continue;
+    }
+    const y = yard(d), n = Math.min(parked, y.cols * y.rows), x0 = d.x - y.w / 2, y0 = d.y - y.h / 2;
     if (!n || sx(x0) > W || sy(y0) > H || sx(x0 + y.w) < 0 || sy(y0 + y.h) < 0) continue;
     ctx.fillStyle = 'rgba(' + d.rgb + ',0.85)';
     if (Math.min(y.sw, y.sh) * k < 1.2) { const f = n / (y.cols * y.rows); ctx.fillRect(sx(x0), sy(y0 + y.h * (1 - f)), Math.max(y.w * k, 2), Math.max(y.h * f * k, 1.5)); continue; }
@@ -309,11 +373,13 @@ function drawVehicles() {
       ctx.fillRect(sx(x0 + cl * y.sw + (y.across ? 0.7 : 5)), sy(y0 + r * y.sh + 1.4), y.bw * k, y.bl * k);
     }
   }
-  const dot = Math.min(Math.max(k * 60, 2.4), 4);
+  const dot = Math.min(Math.max(k * 60, 2.4), 4), off = {};
+  for (const g of groups) off[g.kind] = keepLeft(g.kind, k);
+  const at = (v, s) => { const q = pointAt(v.g, s), o = off[v.w ? v.w.line.group.kind : v.tr.p.line.group.kind] * v.dir; return { x: q.x + Math.sin(q.a) * o, y: q.y - Math.cos(q.a) * o }; };
   if (k < 0.15) for (const v of vehicles) {
     if (!v.w) continue;
-    const X = sx(v.x), Y = sy(v.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue;
-    const rgb = 'rgb(' + v.w.line.rgb + ')';
+    const q = at(v, v.s), X = sx(q.x), Y = sy(q.y); if (X < -4 || X > W + 4 || Y < -4 || Y > H + 4) continue;
+    const rgb = 'rgb(' + v.w.line.vrgb + ')';
     ctx.globalAlpha = v.alpha * (v.state === 'waiting' ? 0.55 : 1); ctx.fillStyle = v.state === 'dead' ? '#ffffff' : rgb; ctx.fillRect(X - dot / 2, Y - dot / 2, dot, dot);
     ctx.lineWidth = v.state === 'dead' ? 1 : 0.6; ctx.strokeStyle = v.state === 'dead' ? rgb : 'rgba(27,29,33,0.55)'; ctx.strokeRect(X - dot / 2, Y - dot / 2, dot, dot);
   }
@@ -324,13 +390,13 @@ function drawVehicles() {
     const l = v.w ? v.w.line : v.tr.p.line, N = l.sections, low = k < 0.05, dead = v.state === 'dead';
     const U = Math.max(l.length * k, low ? 4 : 7), Wd = low ? 3 : Math.min(Math.max(3.2 * k, 3.5), 9);
     const X0 = sx(v.x), Y0 = sy(v.y); if (X0 < -U || X0 > W + U || Y0 < -U || Y0 > H + U) continue;
-    const pts = []; for (let i = 0; i <= N; i++) { const q = pointAt(v.g, v.s + v.dir * (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
+    const pts = []; for (let i = 0; i <= N; i++) { const q = at(v, v.s + v.dir * (U / 2 - U * i / N) / k); pts.push([sx(q.x), sy(q.y)]); }
     ctx.globalAlpha = v.alpha * (v.w && v.state === 'waiting' ? 0.6 : 1); ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i <= N; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.lineCap = 'round';
-    if (low) { ctx.lineWidth = Wd + 1.6; ctx.strokeStyle = '#ffffff'; ctx.stroke(); ctx.lineWidth = Wd; ctx.strokeStyle = 'rgb(' + l.rgb + ')'; ctx.stroke(); ctx.globalAlpha = 1; continue; }
+    if (low) { ctx.lineWidth = Wd + 1.6; ctx.strokeStyle = '#ffffff'; ctx.stroke(); ctx.lineWidth = Wd; ctx.strokeStyle = 'rgb(' + l.vrgb + ')'; ctx.stroke(); ctx.globalAlpha = 1; continue; }
     ctx.lineWidth = Wd + 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
-    ctx.lineWidth = Wd; ctx.strokeStyle = dead ? 'rgb(' + l.rgb + ')' : '#1b1d21'; ctx.stroke();
-    ctx.lineWidth = Wd - 2; ctx.strokeStyle = dead ? '#ffffff' : 'rgb(' + l.rgb + ')'; ctx.stroke();
+    ctx.lineWidth = Wd; ctx.strokeStyle = dead ? 'rgb(' + l.vrgb + ')' : '#1b1d21'; ctx.stroke();
+    ctx.lineWidth = Wd - 2; ctx.strokeStyle = dead ? '#ffffff' : 'rgb(' + l.vrgb + ')'; ctx.stroke();
     if (U / N >= 11) for (let i = 1; i < N; i++) {
       const dx = pts[i + 1][0] - pts[i - 1][0], dy = pts[i + 1][1] - pts[i - 1][1], L = Math.hypot(dx, dy) || 1, w = Wd / 2 - 1;
       ctx.beginPath(); ctx.moveTo(pts[i][0] + dy / L * w, pts[i][1] - dx / L * w); ctx.lineTo(pts[i][0] - dy / L * w, pts[i][1] + dx / L * w); ctx.lineCap = 'butt'; ctx.lineWidth = 1.2; ctx.strokeStyle = '#1b1d21'; ctx.stroke();
@@ -346,7 +412,7 @@ el('title').textContent = D.meta.title;
 el('notes').innerHTML = (D.meta.notes || []).map(n => '<li>' + n + '</li>').join('');
 el('credit').textContent = D.meta.credit;
 el('legend').innerHTML = groups.map(g => {
-  const rows = lines.filter(l => l.group === g).map(l => '<tr><td><span class="sw" style="background:rgb(' + l.rgb + ')"></span>' + l.name + '</td><td class="n" id="ln-' + l.i + '">0</td></tr>').join('');
+  const rows = lines.filter(l => l.group === g).map(l => '<tr><td><span class="sw" style="background:rgb(' + l.rgb + ')">' + (l.vrgb !== l.rgb ? '<i style="background:rgb(' + l.vrgb + ')"></i>' : '') + '</span>' + l.name + '</td><td class="n" id="ln-' + l.i + '">0</td></tr>').join('');
   const status = g.kind === 'bus' ? '<table class="status">' + [['run', 'In service'], ['wait', 'Waiting at a stop'], ['dead', 'Running empty'], ['park', 'In a depot']].map(r => '<tr><td>' + r[1] + '</td><td class="n" id="bs-' + r[0] + '">0</td></tr>').join('') + '</table>' : '';
   return '<div class="sect"><label class="check"><input type="checkbox" data-group="' + g.i + '" checked><span>' + g.name + '</span></label><table>' + rows + '</table>' + status + '</div>';
 }).join('');
@@ -418,8 +484,8 @@ function showTip(mx, my) {
   let html = '', bd = 12 * 12;
   for (const v of vehicles) { const dx = sx(v.x) - mx, dy = sy(v.y) - my, d2 = dx * dx + dy * dy; if (d2 < bd) { bd = d2; html = describe(v); } }
   if (!html) for (const d of depots) {
-    if (!depotOn(d)) continue; const y = yard(d);
-    if (Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4) html = '<b>' + d.name + ' depot</b><br>' + Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0) + ' of ' + d.cap + (d.k === 'bus' ? ' buses in' : ' trains in');
+    if (!depotOn(d)) continue; const b = depotBox(d);
+    if (mx >= Math.min(sx(b.x0), sx(d.x) - 6) - 4 && mx <= Math.max(sx(b.x1), sx(d.x) + 6) + 4 && my >= Math.min(sy(b.y0), sy(d.y) - 6) - 4 && my <= Math.max(sy(b.y1), sy(d.y) + 6) + 4) html = '<b>' + d.name + ' depot</b><br>' + Math.max(d.cap - (vehicles.away ? vehicles.away[d.i] : 0), 0) + ' of ' + d.cap + (d.k === 'bus' ? ' buses in' : ' trains in');
   }
   if (!html) { let sd = 8 * 8; stations.forEach((s, i) => { if (!usedStations.has(i) || !groups[s.group].on || (groups[s.group].kind === 'bus' && view.k <= 0.6)) return; const dx = sx(s.x) - mx, dy = sy(s.y) - my, d2 = dx * dx + dy * dy; if (d2 < sd) { sd = d2; html = '<b>' + s.name + '</b>'; } }); }
   if (!html) { tip.style.display = 'none'; return; }
