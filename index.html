@@ -35,6 +35,11 @@
   details summary{cursor:pointer;font-weight:600;color:#1b1d21;font-size:13px;margin:0 0 4px}
   details li{margin:0 0 4px;line-height:1.35}
   details ul{padding-left:16px;margin:4px 0}
+  details h3{font-size:12px;margin:10px 0 4px;color:#1b1d21}
+  .xchart{width:100%;height:66px;display:block;margin:2px 0 4px}
+  .key{display:flex;flex-wrap:wrap;gap:2px 10px;margin:4px 0 6px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+  .dash{display:inline-block;width:18px;height:0;border-top:3px dashed;margin-right:5px;vertical-align:3px}
   #depots td{font-size:12px}
   .credit{font-size:10.5px;color:#6b717b;margin:4px 0 0;line-height:1.35}
   #tip{position:absolute;z-index:6;pointer-events:none;background:#1b1d21;color:#fff;font-size:12px;line-height:1.4;padding:6px 9px;border-radius:6px;max-width:280px;display:none}
@@ -97,6 +102,22 @@
 
   <details><summary>Depots</summary><table id="depots"></table></details>
   <details><summary>Interchanges</summary><table id="ichs"></table></details>
+  <details id="xd"><summary>More details</summary>
+    <p class="small">Passengers are LTA's fare-card taps for September 2026, as an average weekday or weekend day to match the date shown. <span id="xdNote"></span></p>
+    <h3>Passengers and services through the day</h3>
+    <canvas id="xdBus" class="xchart" aria-label="Bus boardings an hour and buses in service through the day"></canvas>
+    <canvas id="xdTrain" class="xchart" aria-label="Train entries an hour and trains in service through the day"></canvas>
+    <p class="small" id="xdPeak"></p>
+    <h3>On the map</h3>
+    <label class="check"><input type="checkbox" id="xdStops"><span>Busiest stops and stations, this hour</span></label>
+    <label class="check"><input type="checkbox" id="xdFlows"><span>Rides between areas, this hour</span></label>
+    <label class="check"><input type="checkbox" id="xdCrowd"><span>MRT and LRT crowding forecast</span></label>
+    <label class="check"><input type="checkbox" id="xdBuild"><span>Lines being built</span></label>
+    <div class="small" id="xdKey"></div>
+    <h3>Planned bus route changes</h3>
+    <p class="small" id="xdPlanned"></p>
+    <p class="credit">Passengers: LTA DataMall, Passenger Volume by Bus Stops, by Train Stations and by Origin-Destination (September 2026). Crowding: LTA DataMall, Station Crowd Density Forecast. Areas: URA Master Plan 2019 planning areas. Lines being built: &copy; OpenStreetMap contributors (ODbL).</p>
+  </details>
   <details><summary>How this is worked out</summary><ul id="how"></ul></details>
   <p class="credit" id="credit"></p>
 </aside>
@@ -104,7 +125,7 @@
 <div id="zoom"><button type="button" id="zin" aria-label="Zoom in">+</button><button type="button" id="zout" aria-label="Zoom out">&minus;</button><button type="button" id="zfit">Fit</button></div>
 <div id="tip" role="status"></div>
 
-<script src="sg-data.js?v=7c804ccb"></script>
+<script src="sg-data.js?v=7e4648e3"></script>
 <script>
 (function () {
 'use strict';
@@ -162,12 +183,20 @@ const RL = D.rail.lines.map(l => ({ name: l.name, short: l.short, rgb: l.colour,
 const rstations = D.rail.stations.map(s => ({ id: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
 const rpats = D.rail.patterns.map(p => ({ line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, fixed: !!p.fixed, win: p.win, starts: p.starts, dur: p.t[p.t.length - 1] }));
 const startOf = p => pointAt(p.g, p.d[0]), endOf = p => pointAt(p.g, p.d[p.d.length - 1]);
-const roadRun = (g, rev) => ({ g, rev, secs: g.cum[g.n - 1] / DEAD_SPEED + 60 });
-const lineRun = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, rev: false, secs: len * DEAD_DETOUR / DEAD_SPEED + 120 }; };
+const RUN_T = D.runBands || [], RUN_S = new Map((D.runTimes || []).map(r => [r[0], r[1]]));
+function runSecs(s, t) {
+  const b = RUN_T, n = b.length; if (n === 1) return s[0];
+  t = ((t % 86400) + 86400) % 86400;
+  let k = n - 1; for (let i = 0; i < n; i++) if (b[i] <= t) k = i;
+  const j = (k + 1) % n, tk = b[k] <= t ? b[k] : b[k] - 86400, tj = b[j] > tk ? b[j] : b[j] + 86400, f = (t - tk) / (tj - tk);
+  return s[k] + (s[j] - s[k]) * f;
+}
+const roadRun = (gi, rev) => { const g = geoms[gi], s = RUN_S.get(gi), secs = g.cum[g.n - 1] / DEAD_SPEED + 60; return { g, rev, secs, at: s ? t => runSecs(s, t) : () => secs }; };
+const lineRun = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, secs = len * DEAD_DETOUR / DEAD_SPEED + 120; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, rev: false, secs, at: () => secs }; };
 for (const p of pats) {
   const dep = p.svc.depot;
-  p.outRun = p.r && p.r[0] >= 0 ? roadRun(geoms[p.r[0]], false) : lineRun(dep, startOf(p));
-  p.inRun = p.r && p.r[1] >= 0 ? roadRun(geoms[p.r[1]], true) : lineRun(endOf(p), dep);
+  p.outRun = p.r && p.r[0] >= 0 ? roadRun(p.r[0], false) : lineRun(dep, startOf(p));
+  p.inRun = p.r && p.r[1] >= 0 ? roadRun(p.r[1], true) : lineRun(endOf(p), dep);
 }
 
 const groups = new Map();
@@ -206,7 +235,7 @@ function departures(first, last, h, dt, fixed, hb) {
   return out;
 }
 
-const goesHome = (a, b) => b.start - a.end > Math.max(WAIT_MAX, a.p.inRun.secs + b.p.outRun.secs + PREP + 1800);
+const goesHome = (a, b) => b.start - a.end > Math.max(WAIT_MAX, a.p.inRun.at(a.end) + b.p.outRun.at(b.start - PREP) + PREP + 1800);
 const OUT = 0, WAIT = 1, RUN = 2, IN = 3;
 
 function workings(dt) {
@@ -271,13 +300,13 @@ for (const pl of plans) {
   const { buses } = pl;
   for (const bus of buses) {
     const segs = [], first = bus.trips[0];
-    const goOut = tr => { const R = tr.p.outRun; segs.push({ k: OUT, t0: tr.start - PREP - R.secs, t1: tr.start - PREP, run: R, trip: tr }); segs.push({ k: WAIT, t0: tr.start - PREP, t1: tr.start, trip: tr }); };
+    const goOut = tr => { const R = tr.p.outRun; segs.push({ k: OUT, t0: tr.start - PREP - R.at(tr.start - PREP), t1: tr.start - PREP, run: R, trip: tr }); segs.push({ k: WAIT, t0: tr.start - PREP, t1: tr.start, trip: tr }); };
     if (bus.morn) segs.push({ k: WAIT, t0: first.start - PREP, t1: first.start, trip: first }); else goOut(first);
     bus.trips.forEach((tr, i) => {
       segs.push({ k: RUN, t0: tr.start, t1: tr.end, trip: tr });
       const nx = bus.trips[i + 1], R = tr.p.inRun;
-      if (!nx) { if (!bus.night) segs.push({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, trip: tr }); return; }
-      if (goesHome(tr, nx)) { segs.push({ k: IN, t0: tr.end, t1: tr.end + R.secs, run: R, trip: tr }); goOut(nx); }
+      if (!nx) { if (!bus.night) segs.push({ k: IN, t0: tr.end, t1: tr.end + R.at(tr.end), run: R, trip: tr }); return; }
+      if (goesHome(tr, nx)) { segs.push({ k: IN, t0: tr.end, t1: tr.end + R.at(tr.end), run: R, trip: tr }); goOut(nx); }
       else segs.push({ k: WAIT, t0: tr.end, t1: nx.start, trip: nx });
     });
     bus.segs = segs; bus.t0 = segs[0].t0; bus.t1 = segs[segs.length - 1].t1;
@@ -578,6 +607,11 @@ function drawBase() {
     RL.forEach((l, i) => { c.strokeStyle = 'rgb(' + l.rgb + ')'; c.lineWidth = (l.cable ? w * 0.4 : w) / k; c.stroke(railPaths[i]); });
     if (w > 2.4) RL.forEach((l, i) => { if (l.cable) return; c.strokeStyle = '#ffffff'; c.lineWidth = w * 0.3 / k; c.stroke(railPaths[i]); });
   }
+  if (XD.on.build && XD.data) {
+    const w = Math.min(Math.max(4 * k, 2), 5);
+    for (const b of XD.data.bl) { c.setLineDash([]); c.strokeStyle = 'rgba(255,255,255,0.8)'; c.lineWidth = (w + 2) / k; c.stroke(b.p); c.setLineDash([6 / k, 4 / k]); c.strokeStyle = 'rgb(' + b.rgb + ')'; c.lineWidth = w / k; c.stroke(b.p); }
+    c.setLineDash([]);
+  }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (show.trains && k > 0.02) {
     const r = Math.min(Math.max(k * 40, 1.8), 6);
@@ -624,6 +658,7 @@ function drawYard(d, n, rgbOf, capOf) {
 function drawDynamic() {
   const k = view.k;
   ctx.lineJoin = 'round';
+
   if (show.buses) {
     for (const d of depots) drawYard(d, Math.max(0, d.cap - busCount.depotOut[d.i]), () => OPS[d.op].rgb);
     for (const I of ICH) { const P = ichParked[I.i], Q = ichWaiting[I.i], night = P.length; drawYard(I, night + Q.length, i => OPS[i < night ? P[i][2] : Q[i - night].bus.op].rgb, i => i < night ? ICH_NIGHT : ICH_WAIT); }
@@ -691,6 +726,7 @@ function drawDynamic() {
     ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], Math.max(Wd * 0.2, 1), 0, 7); ctx.fillStyle = '#ffffff'; ctx.fill();
     ctx.globalAlpha = 1;
   }
+  if (XD.data) drawDetails();
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -707,10 +743,10 @@ el('ichs').innerHTML = '<tr><td colspan="2" class="small">' + sw2(ICH_WAIT) + 'w
 el('credit').textContent = 'Built ' + D.meta.built + '. ' + D.meta.credit;
 const guessed = services.filter(s => s.guess).map(s => s.n);
 el('how').innerHTML = [
-  'Routes, stops and first and last buses at every stop are LTA\'s (via BusRouter SG, ' + D.meta.busData + '). Times between stops are LTA\'s published first-bus times differenced, from a community feed (' + D.meta.gtfsVersion + ').',
+  'Routes, stops and first and last buses at every stop are LTA\'s (LTA DataMall' + (D.meta.dmDate ? ', ' + D.meta.dmDate : '') + '). Times between stops come from LTA\'s first and last bus times at each stop. The lines the routes follow are BusRouter SG\'s.',
   'LTA does not publish bus timetables. It does publish, for every service and direction, the range of the gap between buses in four periods: 6:30-8:30, 8:31-16:59, 17:00-19:00 and after 19:00 (LTA DataMall). Buses here run at the middle of each range, at the 8:31-16:59 gap before 6:30, and not at all in a period with no gap. LTA gives no weekend figures, so Saturdays and Sundays run at the off-peak gaps: the daytime one from 8:00 (Sundays 9:00) to 20:00, the evening one otherwise.',
   'Which bus works which trip is not published either. Buses stay on their service, take the next departure from the terminal they reach after at least ' + LAYOVER / 60 + ' minutes there, and go back to the depot when the next one they are needed for is more than ' + WAIT_MAX / 60 + ' minutes away (and the round trip fits). The depot for each service comes from its contract package; ' + (guessed.length ? guessed.join(', ') + ' are not listed, so they use the nearest depot.' : 'every service is listed.'),
-  'Buses running empty to and from their depot follow the roads, at 25 km/h: the shortest way, from the bus stop nearest the depot, along roads the bus routes use. Roads no bus route uses, and one-way streets, are not known.',
+  'Buses running empty to and from their depot follow the roads, from the depot to where their trip starts: LTA\'s road network, plus the bus route lines where LTA lists no road (Changi Airport, Sentosa, the zoo, Johor Bahru). ' + (RUN_T.length ? 'Their speed through the day is LTA\'s measured road speed (Traffic Speed Bands, ' + (D.meta.speedDate || '') + ', at ' + RUN_T.map(t => hhmm(t)).join(', ') + '), averaged by type of road, at most 60 km/h.' : 'They run at 25 km/h.') + ' One-way streets are not known.',
   'MRT and LRT trains run to LTA\'s published timetable (LTA DataMall, train GTFS schedule): every trip on weekdays, Saturdays and Sundays or public holidays, short turns included. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
   'Some buses sleep at the interchanges. Half of each interchange\'s berths (Wikipedia\'s list) are taken overnight by the last buses of the night to finish there, so they do not block earlier arrivals; their service\'s first buses leave from there in the morning. Each depot is drawn with room for the most of its buses it holds at once.',
   'Through the day, a bus between trips waits where its next trip starts. At an interchange it is drawn inside the interchange in its operator\'s colour with a light orange end, apart from the buses parked there overnight (dark orange end). At busy times more buses wait than there are berths; the extra bays, drawn dashed, stand for the interchange\'s bus park.',
@@ -736,6 +772,121 @@ function drawSpark() {
 }
 spark.addEventListener('click', e => { const r = spark.getBoundingClientRect(); setSim(Math.floor(sim / DAY) * DAY + Math.round((e.clientX - r.left) / r.width * 86400 / 30) * 30000); });
 
+const XD = { data: null, loading: false, on: { stops: false, flows: false, crowd: false, build: false }, arcs: [], crowdF: null };
+const CROWD = { l: '58,157,93', m: '242,165,22', h: '215,38,61' }, CROWD_NAME = { l: 'low', m: 'moderate', h: 'high' };
+function loadDetails() {
+  if (XD.data || XD.loading) return; XD.loading = true; el('xdNote').textContent = 'Loading...';
+  const s = document.createElement('script'); s.src = 'sg-details.js?v=' + encodeURIComponent(D.meta.built || '');
+  s.onload = () => {
+    const X = window.SG_DETAILS; if (!X) return;
+    X.st = X.stations.map(s => ({ name: s[0], key: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
+    X.ar = X.areas.map(a => ({ name: a[0], x: px(a[1] / Qd), y: py(a[2] / Qd) }));
+    X.flowMax = [0, 1].map(d => { let m = 1; for (let h = 0; h < 24; h++) { const l = X.flows[d * 24 + h]; for (let i = 2; i < l.length; i += 3) m = Math.max(m, l[i]); } return m; });
+    X.bl = X.building.map(b => ({ name: b.name, rgb: b.colour, p: path(b.g.map(decode)) }));
+    X.cr = X.crowd.map(c => ({ date: c.date, dt: c.dt, st: c.st.map(s => ({ name: s[0], x: px(s[1] / Qd), y: py(s[2] / Qd), lv: s[3] })) }));
+    XD.data = X; el('xdNote').textContent = ''; baseDirty = true;
+    const P = X.planned; el('xdPlanned').textContent = P.list.length ? P.list.map(r => 'Service ' + r[0] + (r[1] ? ' from ' + r[1].slice(0, 10) : '')).join('; ') + '.' : 'LTA lists none' + (P.checked ? ' (checked ' + P.checked + ')' : '') + '. When it does, the new routes can be fetched and built in.';
+  };
+  s.onerror = () => { XD.loading = false; el('xdNote').textContent = 'The details file is missing.'; };
+  document.head.appendChild(s);
+}
+const pdt = day => dayType(day) === 0 ? 0 : 1, DT_WORD = ['weekday', 'weekend day'];
+function hourly(arr, base, d, secs) {
+  const u = secs / 3600 - 0.5, h0 = Math.floor(u), f = u - h0, a = ((h0 % 24) + 24) % 24, b = (a + 1) % 24;
+  return arr[base + d * 24 + a] * (1 - f) + arr[base + d * 24 + b] * f;
+}
+const stopR = v => Math.sqrt(v) * 0.085 * Math.sqrt(Math.min(Math.max(view.k / 0.03, 1), 3));
+function crowdFor(day) { const X = XD.data, dt = dayType(day); return X.cr.find(c => c.dt === dt) || X.cr.find(c => (c.dt === 0) === (dt === 0)) || X.cr[X.cr.length - 1] || null; }
+function drawDetails() {
+  const X = XD.data, day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, d = pdt(day);
+  const vis = (Xs, Ys, r) => Xs > -r && Xs < W + r && Ys > -r && Ys < H + r;
+  XD.arcs = [];
+  if (XD.on.flows) {
+    const l = X.flows[d * 24 + Math.floor(secs / 3600) % 24], m = X.flowMax[d];
+    ctx.lineCap = 'round';
+    for (let i = l.length - 3; i >= 0; i -= 3) {
+      const A = X.ar[l[i]], B = X.ar[l[i + 1]], v = l[i + 2], x1 = sx(A.x), y1 = sy(A.y), x2 = sx(B.x), y2 = sy(B.y), dx = x2 - x1, dy = y2 - y1;
+      const cx = (x1 + x2) / 2 - dy * 0.18, cy = (y1 + y2) / 2 + dx * 0.18, w = 0.8 + 11 * v / m;
+      ctx.strokeStyle = 'rgba(16,96,120,0.5)'; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(cx, cy, x2, y2); ctx.stroke();
+      const t = 0.8, qx = (1 - t) * (1 - t) * x1 + 2 * (1 - t) * t * cx + t * t * x2, qy = (1 - t) * (1 - t) * y1 + 2 * (1 - t) * t * cy + t * t * y2, tx = 2 * (1 - t) * (cx - x1) + 2 * t * (x2 - cx), ty = 2 * (1 - t) * (cy - y1) + 2 * t * (y2 - cy), tl = Math.hypot(tx, ty) || 1, s = w * 0.9 + 3;
+      ctx.fillStyle = 'rgba(16,96,120,0.75)'; ctx.beginPath(); ctx.moveTo(qx + tx / tl * s, qy + ty / tl * s); ctx.lineTo(qx - ty / tl * s * 0.7, qy + tx / tl * s * 0.7); ctx.lineTo(qx + ty / tl * s * 0.7, qy - tx / tl * s * 0.7); ctx.fill();
+      XD.arcs.push({ x: 0.25 * x1 + 0.5 * cx + 0.25 * x2, y: 0.25 * y1 + 0.5 * cy + 0.25 * y2, A, B, v });
+    }
+    ctx.fillStyle = '#10607a'; for (const A of new Set(XD.arcs.flatMap(a => [a.A, a.B]))) { const Xs = sx(A.x), Ys = sy(A.y); if (vis(Xs, Ys, 4)) { ctx.beginPath(); ctx.arc(Xs, Ys, 2.5, 0, 7); ctx.fill(); } }
+  }
+  if (XD.on.stops) {
+    ctx.lineWidth = 1; ctx.fillStyle = 'rgba(214,96,30,0.32)'; ctx.strokeStyle = 'rgba(150,58,10,0.75)';
+    for (let i = 0; i < stops.length; i++) {
+      const v = hourly(X.stopIn, i * 48, d, secs) + hourly(X.stopOut, i * 48, d, secs), r = stopR(v); if (r < 0.7) continue;
+      const Xs = sx(stops[i].x), Ys = sy(stops[i].y); if (!vis(Xs, Ys, r)) continue;
+      ctx.beginPath(); ctx.arc(Xs, Ys, r, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(40,70,190,0.30)'; ctx.strokeStyle = 'rgba(25,45,140,0.85)';
+    X.st.forEach((s, i) => {
+      const v = hourly(X.stationIn, i * 48, d, secs) + hourly(X.stationOut, i * 48, d, secs), r = stopR(v); if (r < 0.7) return;
+      const Xs = sx(s.x), Ys = sy(s.y); if (!vis(Xs, Ys, r)) return;
+      ctx.beginPath(); ctx.arc(Xs, Ys, r, 0, 7); ctx.fill(); ctx.stroke();
+    });
+  }
+  if (XD.on.crowd) {
+    const F = XD.crowdF = crowdFor(day); if (!F) return;
+    const q = Math.floor(secs / 1800) % 48, r = Math.min(Math.max(view.k * 70, 3.5), 8);
+    ctx.lineWidth = 1.5; ctx.strokeStyle = '#ffffff';
+    for (const s of F.st) { const Xs = sx(s.x), Ys = sy(s.y); if (!vis(Xs, Ys, r)) continue; const c = CROWD[s.lv[q]]; ctx.fillStyle = c ? 'rgb(' + c + ')' : '#9aa0a8'; ctx.beginPath(); ctx.arc(Xs, Ys, r, 0, 7); ctx.fill(); ctx.stroke(); }
+  }
+}
+function detailsTip(mx, my) {
+  const X = XD.data; if (!X) return '';
+  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, d = pdt(day), near = (x, y) => Math.hypot(sx(x) - mx, sy(y) - my);
+  const per = ' an hour (September 2026, average ' + DT_WORD[d] + ')';
+  if (XD.on.crowd && XD.crowdF) { const q = Math.floor(secs / 1800) % 48; for (const s of XD.crowdF.st) if (near(s.x, s.y) < 8) return '<b>' + s.name + '</b><br>Crowding forecast ' + hhmm(q * 1800) + '-' + hhmm(q * 1800 + 1800) + ': ' + (CROWD_NAME[s.lv[q]] || 'not given') + '<br>LTA forecast for ' + XD.crowdF.date; }
+  if (XD.on.stops) {
+    let best = '', bd = Infinity;
+    X.st.forEach((s, i) => { const a = hourly(X.stationIn, i * 48, d, secs), b = hourly(X.stationOut, i * 48, d, secs), dd = near(s.x, s.y); if (dd < Math.max(stopR(a + b), 5) && dd < bd) { bd = dd; best = '<b>' + s.name + '</b> station (' + s.key + ')<br>' + fmtN(Math.round(a)) + ' in, ' + fmtN(Math.round(b)) + ' out' + per; } });
+    if (!best) for (let i = 0; i < stops.length; i++) { const a = hourly(X.stopIn, i * 48, d, secs), b = hourly(X.stopOut, i * 48, d, secs), dd = near(stops[i].x, stops[i].y); if (dd < Math.max(stopR(a + b), 4) && dd < bd) { bd = dd; best = '<b>' + stops[i].name + '</b> (' + stops[i].code + ')<br>' + fmtN(Math.round(a)) + ' boarding, ' + fmtN(Math.round(b)) + ' alighting' + per; } }
+    if (best) return best;
+  }
+  if (XD.on.flows) { let best = null, bd = 12; for (const a of XD.arcs) { const dd = Math.hypot(a.x - mx, a.y - my); if (dd < bd) { bd = dd; best = a; } } if (best) return '<b>' + best.A.name + ' to ' + best.B.name + '</b><br>' + fmtN(best.v) + ' bus and train rides, ' + hhmm(Math.floor(secs / 3600) * 3600) + '-' + hhmm(Math.floor(secs / 3600) * 3600 + 3600) + '<br>September 2026, average ' + DT_WORD[d]; }
+  return '';
+}
+const curves = new Map();
+function inService(kind, dt) {
+  const key = kind + dt; if (curves.has(key)) return curves.get(key);
+  const a = new Float32Array(288);
+  if (kind === 'bus') { for (const b of planFor(dt).buses) for (const sg of b.segs) if (sg.k === RUN) for (let i = Math.ceil(sg.t0 / 300); i * 300 < sg.t1; i++) a[i % 288]++; }
+  else for (const tr of railFor(dt)) { if (tr.p.line.cable) continue; for (let i = Math.ceil(tr.start / 300); i * 300 < tr.end; i++) a[i % 288]++; }
+  curves.set(key, a); return a;
+}
+function drawXChart(cv, bars, line, colour, secs) {
+  const r = cv.getBoundingClientRect(), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr); if (!w || !h) return;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, r.width, r.height);
+  const top = 12, bot = r.height - 11, X = t => t / 86400 * r.width, bm = Math.max(...bars), lm = Math.max(...line);
+  c.fillStyle = 'rgb(' + colour + ')'; bars.forEach((v, hr) => { const y = bot - v / bm * (bot - top); c.fillRect(X(hr * 3600) + 0.5, y, r.width / 24 - 1, bot - y); });
+  c.beginPath(); line.forEach((v, i) => { const x = X(i * 300), y = bot - v / lm * (bot - top); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.strokeStyle = '#1b1d21'; c.lineWidth = 1.4; c.stroke();
+  c.fillStyle = '#5b616b'; c.font = '10px system-ui, Segoe UI, Arial, sans-serif'; c.textBaseline = 'bottom';
+  for (const hr of [0, 6, 12, 18]) c.fillText(String(hr).padStart(2, '0'), X(hr * 3600) + (hr ? -6 : 0), r.height);
+  const cx = X(secs); c.strokeStyle = '#d4006a'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(cx, top - 2); c.lineTo(cx, bot); c.stroke();
+}
+function drawDetailsPanel() {
+  const X = XD.data; if (!X || !el('xd').open) return;
+  const day = Math.floor(sim / DAY), secs = (sim - day * DAY) / 1000, d = pdt(day), dt = dayType(day);
+  const bus = inService('bus', dt), train = inService('train', dt), bb = X.demand.bus[d], tb = X.demand.train[d];
+  drawXChart(el('xdBus'), bb, bus, '243,201,168', secs); drawXChart(el('xdTrain'), tb, train, '200,211,240', secs);
+  const argmax = a => { let m = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[m]) m = i; return m; };
+  const hb = argmax(bb), ht = argmax(tb), pb = argmax(bus), pt = argmax(train);
+  el('xdPeak').innerHTML = '<span class="sw" style="background:rgb(243,201,168)"></span>Bus boardings an hour, most at ' + hhmm(hb * 3600) + '-' + hhmm(hb * 3600 + 3600) + ' (' + fmtN(bb[hb]) + '); line: buses in service, most at ' + hhmm(pb * 300) + ' (' + fmtN(bus[pb]) + ').<br>'
+    + '<span class="sw" style="background:rgb(200,211,240)"></span>Train entries an hour, most at ' + hhmm(ht * 3600) + '-' + hhmm(ht * 3600 + 3600) + ' (' + fmtN(tb[ht]) + '); line: trains in service, most at ' + hhmm(pt * 300) + ' (' + fmtN(train[pt]) + ').';
+  const key = [];
+  if (XD.on.stops) key.push('<div class="key"><span><span class="dot" style="background:rgba(214,96,30,.45);border:1px solid rgb(150,58,10)"></span>bus stop</span><span><span class="dot" style="background:rgba(40,70,190,.4);border:1px solid rgb(25,45,140)"></span>station</span></div>Circle area: people boarding plus alighting this hour, average ' + DT_WORD[d] + '.');
+  if (XD.on.flows) key.push('<div class="key"><span><span class="dash" style="border-top:3px solid rgba(16,96,120,.6)"></span>rides an hour from one planning area to another</span></div>The 60 biggest flows this hour; every bus or train ride counts, so a journey with a change counts twice. ' + fmtN(X.rides[d * 24 + Math.floor(secs / 3600) % 24]) + ' rides start this hour in all.');
+  if (XD.on.crowd) { const F = crowdFor(day); key.push('<div class="key">' + ['l', 'm', 'h'].map(c => '<span><span class="dot" style="background:rgb(' + CROWD[c] + ')"></span>' + CROWD_NAME[c] + '</span>').join('') + '</div>' + (F ? 'LTA\'s forecast for ' + F.date + (F.dt === dt ? '' : ' (no forecast for this kind of day yet)') + ', by half hour.' : 'No forecast saved.')); }
+  if (XD.on.build) key.push('<div class="key">' + X.bl.map(b => '<span><span class="dash" style="border-color:rgb(' + b.rgb + ')"></span>' + b.name + '</span>').join('') + '</div>');
+  const html = key.join('<br>'); if (el('xdKey').innerHTML !== html) el('xdKey').innerHTML = html;
+}
+el('xd').addEventListener('toggle', () => { if (el('xd').open) loadDetails(); });
+for (const [id, k] of [['xdStops', 'stops'], ['xdFlows', 'flows'], ['xdCrowd', 'crowd'], ['xdBuild', 'build']]) el(id).addEventListener('change', e => { XD.on[k] = e.target.checked; if (e.target.checked) loadDetails(); baseDirty = true; });
+
 let scrubbing = false;
 function updatePanel() {
   const d = new Date(sim), secs = Math.floor((sim % DAY) / 1000);
@@ -754,7 +905,7 @@ function updatePanel() {
   railYards.forEach(Y => { if (Y.n) el('rd-' + Y.d.i).textContent = Math.max(Y.n - tc.depotOut[Y.d.i].reduce((a, b) => a + b, 0), 0) + ' of ' + Y.n; });
   depots.forEach(dp => { el('dp-' + dp.i).textContent = fmtN(Math.max(dp.cap - c.depotOut[dp.i], 0)) + ' of ' + fmtN(dp.slots); });
   el('fleet').textContent = 'The model needs ' + fmtN(FLEET) + ' buses, from ' + depots.length + ' depots, for ' + fmtN(planFor(dayType(Math.floor(sim / DAY))).trips) + ' trips today. LTA\'s fleet is about 5,800, spares included. In service: by operator, above.';
-  drawSpark();
+  drawSpark(); drawDetailsPanel();
 }
 
 function setSim(ms) { live = false; sim = ms; }
@@ -822,6 +973,7 @@ function showTip(mx, my) {
   const near = (x, y) => { const dx = sx(x) - mx, dy = sy(y) - my; return dx * dx + dy * dy; };
   if (show.trains) for (const t of trains) { const d2 = near(t.x, t.y); if (d2 < bd) { bd = d2; html = describeTrain(t); } }
   if (show.buses) for (const b of buses) { const d2 = near(b.x, b.y); if (d2 < bd) { bd = d2; html = describeBus(b); } }
+  if (!html && XD.data) html = detailsTip(mx, my);
   const over = d => { const y = yard(d); return Math.abs(mx - sx(d.x)) <= Math.max(y.w * view.k / 2, 6) + 4 && Math.abs(my - sy(d.y)) <= Math.max(y.h * view.k / 2, 6) + 4; };
   if (!html) for (const d of depots) if (over(d)) html = '<b>' + d.name + '</b><br>' + OPS[d.op].name + '<br>' + fmtN(Math.max(d.cap - busCount.depotOut[d.i], 0)) + ' of ' + fmtN(d.slots) + ' buses in the depot';
   if (!html) for (const I of ICH) if (over(I)) { const w = ichWaiting[I.i].length, p = ichParked[I.i].length; html = '<b>' + I.name + '</b><br>' + w + ' waiting between trips<br>' + p + ' parked overnight<br>' + I.slots + ' berths' + (w + p > I.slots ? ', so ' + (w + p - I.slots) + ' in the bus park' : ''); }

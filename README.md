@@ -4,7 +4,7 @@ Every bus, tram and train through the day in Singapore, Greater Manchester and G
 
 ## Data
 
-- Singapore buses, MRT and LRT timetable and roads: LTA DataMall (bus services, routes and stops; train GTFS schedule; road section lines); bus route lines from BusRouter SG; a few gaps and run times LTA does not give from singapore-gtfs (Vorld)
+- Singapore buses, MRT and LRT timetable, roads, passenger numbers and crowding forecasts: LTA DataMall (bus services, routes and stops; train GTFS schedule; road section lines; passenger volume; station crowd density forecast); bus route lines from BusRouter SG; a few gaps and run times LTA does not give from singapore-gtfs (Vorld); Singapore lines being built from OpenStreetMap
 - Singapore land: URA Master Plan 2019 Planning Area Boundary, data.gov.sg
 - Singapore depots and interchange berths: Wikipedia
 - Metrolink and Manchester buses: Transport for Greater Manchester timetable (ODbL); Manchester roads from TfGM bus routes
