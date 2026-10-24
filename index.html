@@ -104,7 +104,7 @@
 <div id="zoom"><button type="button" id="zin" aria-label="Zoom in">+</button><button type="button" id="zout" aria-label="Zoom out">&minus;</button><button type="button" id="zfit">Fit</button></div>
 <div id="tip" role="status"></div>
 
-<script src="sg-data.js?v=80a73965"></script>
+<script src="sg-data.js?v=7c804ccb"></script>
 <script>
 (function () {
 'use strict';
@@ -156,11 +156,11 @@ function pointAt(g, s) {
 const OPS = D.operators.map(o => ({ id: o.id, name: o.name, rgb: o.colour }));
 const depots = D.depots.map((d, i) => ({ i, name: d.name, op: d.op, x: px(d.lon), y: py(d.lat), cap: 0, out: 0 }));
 const stops = D.stops.map(s => ({ code: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
-const services = D.services.map(s => ({ n: s.n, op: s.op, depot: depots[s.depot], guess: !!s.guess, group: s.n.replace(/[ABCT]$/, '') }));
-const pats = D.patterns.map(p => ({ svc: services[p.v], g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, w: p.w, straight: !!p.x, r: p.r, dur: p.t[p.t.length - 1] }));
+const services = D.services.map(s => ({ n: s.n, op: s.op, depot: depots[s.depot], guess: !!s.guess, group: s.n.replace(/[ABCT]$/, '') + '|' + s.op }));
+const pats = D.patterns.map(p => ({ svc: services[p.v], g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, hb: p.hb, w: p.w, straight: !!p.x, r: p.r, dur: p.t[p.t.length - 1] }));
 const RL = D.rail.lines.map(l => ({ name: l.name, short: l.short, rgb: l.colour, cars: l.cars, length: l.length, cable: !!l.cable }));
 const rstations = D.rail.stations.map(s => ({ id: s[0], name: s[1], x: px(s[2] / Qd), y: py(s[3] / Qd) }));
-const rpats = D.rail.patterns.map(p => ({ line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, fixed: !!p.fixed, win: p.win, dur: p.t[p.t.length - 1] }));
+const rpats = D.rail.patterns.map(p => ({ line: RL[p.l], li: p.l, g: geoms[p.g], s: p.s, d: p.d, t: p.t, h: p.h, loop: !!p.loop, fixed: !!p.fixed, win: p.win, starts: p.starts, dur: p.t[p.t.length - 1] }));
 const startOf = p => pointAt(p.g, p.d[0]), endOf = p => pointAt(p.g, p.d[p.d.length - 1]);
 const roadRun = (g, rev) => ({ g, rev, secs: g.cum[g.n - 1] / DEAD_SPEED + 60 });
 const lineRun = (a, b) => { const len = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { g: { x: [a.x, b.x], y: [a.y, b.y], cum: [0, len], n: 2 }, rev: false, secs: len * DEAD_DETOUR / DEAD_SPEED + 120 }; };
@@ -182,8 +182,25 @@ for (const [gk, list] of groups) {
 const dayType = dayKey => { const dow = new Date(dayKey * DAY).getUTCDay(); return dow === 6 ? 1 : dow === 0 ? 2 : 0; };
 const DAYTYPE_NAMES = ['Monday to Friday', 'Saturday', 'Sunday'];
 const factor = (dt, t) => { t %= 86400; let f = 1; for (const [from, k] of BANDS[dt]) if (t >= from) f = k; return f; };
-function departures(first, last, h, dt, fixed) {
+const BAND_ENDS = [[6.5, 8.5, 17, 19], [8, 20], [9, 20]].map(l => l.map(x => x * 3600));
+function bandGap(hb, dt, t) {
+  const g = hb.map(v => v > 0 ? v : 0), [ap, ao, pp, po] = g, s = t >= 86400 ? 86399 : t;
+  if (dt === 0) return s < 23400 ? (ao || ap) : s < 30600 ? ap : s < 61200 ? ao : s < 68400 ? pp : po;
+  const [a, b] = BAND_ENDS[dt];
+  return s >= a && s < b ? (ao || ap || pp || po) : (po || ao || pp || ap);
+}
+function departures(first, last, h, dt, fixed, hb) {
   const out = []; let t = first;
+  if (hb) {
+    while (t <= last) {
+      const g = bandGap(hb, dt, t);
+      if (!g) { const next = t < 86400 ? BAND_ENDS[dt].find(b => b > t) : undefined; if (next === undefined || next > last) break; t = next; continue; }
+      out.push(t); t += Math.max(120, g);
+    }
+    const gl = bandGap(hb, dt, last);
+    if (gl && out.length && last - out[out.length - 1] > gl * 0.4) out.push(last);
+    return out;
+  }
   while (t <= last) { out.push(t); t += fixed ? h : Math.max(120, h * factor(dt, t)); }
   if (out.length && last - out[out.length - 1] > h * 0.4) out.push(last);
   return out;
@@ -196,7 +213,7 @@ function workings(dt) {
   const byGroup = new Map(); let tripCount = 0;
   for (const p of pats) {
     const w = p.w && p.w[dt]; if (!w) continue;
-    for (const start of departures(w[0], w[1], p.h, dt)) {
+    for (const start of departures(w[0], w[1], p.h, dt, false, p.hb)) {
       const k = p.svc.group; if (!byGroup.has(k)) byGroup.set(k, []);
       byGroup.get(k).push({ p, start, end: start + p.dur, bus: null }); tripCount++;
     }
@@ -310,7 +327,7 @@ const railPlans = new Map();
 function railFor(dt) {
   if (railPlans.has(dt)) return railPlans.get(dt);
   const trips = [];
-  for (const p of rpats) for (const start of departures(p.win[0], p.win[1], p.h, dt, p.fixed)) trips.push({ p, start, end: start + p.dur });
+  for (const p of rpats) for (const start of (p.starts ? p.starts[dt] : departures(p.win[0], p.win[1], p.h, dt, p.fixed))) trips.push({ p, start, end: start + p.dur });
   trips.sort((a, b) => a.start - b.start);
   const waiting = new Map(), key = (st, li) => st + '|' + li;
   for (const tr of trips.slice().sort((a, b) => a.end - b.end)) { const k = key(tr.p.s[tr.p.s.length - 1], tr.p.li); if (!waiting.has(k)) waiting.set(k, []); waiting.get(k).push(tr); }
@@ -491,6 +508,8 @@ function zoomAt(mx, my, factor) {
 const path = (lines, close) => { const p = new Path2D(); for (const g of lines) { p.moveTo(g.x[0], g.y[0]); for (let i = 1; i < g.n; i++) p.lineTo(g.x[i], g.y[i]); if (close) p.closePath(); } return p; };
 const landPath = path(land, true), waterPath = path((D.water || []).map(decode), true), islandPath = path((D.islands || []).map(decode), true), riverPath = path((D.rivers || []).map(decode));
 const roadPath = path([...new Set(pats.filter(p => !p.straight).map(p => p.g))]);
+let ltaRoads = null;
+setTimeout(() => { const s = document.createElement('script'); s.src = 'sg-roads.js?v=' + encodeURIComponent(D.meta.built || ''); s.onload = () => { const R = window.SG_ROADS; if (!R) return; ltaRoads = { major: path(R.major.map(decode)), arterial: path(R.arterial.map(decode)), local: path(R.local.map(decode)) }; baseDirty = true; }; document.head.appendChild(s); }, 300);
 const railPaths = RL.map((l, li) => path(D.rail.draw.filter(r => r.l === li).map(r => decode(r.g))));
 const areas = D.areas.map(a => ({ name: a[0].toUpperCase(), x: px(a[1] / Qd), y: py(a[2] / Qd), km2: a[3] })).sort((a, b) => b.km2 - a.km2);
 const terminals = (() => {
@@ -523,7 +542,17 @@ function drawBase() {
   c.lineJoin = c.lineCap = 'round';
   c.fillStyle = '#f3f1ea'; c.fill(landPath); c.strokeStyle = '#f3f1ea'; c.lineWidth = 1.2 / k; c.stroke(landPath);
   c.fillStyle = '#c9dde8'; c.fill(waterPath); c.fillStyle = '#f3f1ea'; c.fill(islandPath); c.strokeStyle = '#c9dde8'; c.lineWidth = Math.max(1.4 / k, 8); c.stroke(riverPath);
-  if (show.roads) {
+  if (show.roads && ltaRoads) {
+    const R = ltaRoads, layers = k > 0.25 ? [R.local, R.arterial, R.major] : k > 0.06 ? [R.arterial, R.major] : [R.major];
+    if (k > 0.25) {
+      c.strokeStyle = '#d6cfbf'; for (const [p, w] of [[R.local, 8], [R.arterial, 11], [R.major, 14]]) { c.lineWidth = Math.max(w, 2.6 / k); c.stroke(p); }
+      for (const [p, w, col] of [[R.local, 5.5, '#ffffff'], [R.arterial, 8, '#ffffff'], [R.major, 11, '#fbefc9']]) { c.strokeStyle = col; c.lineWidth = Math.max(w, 1.3 / k); c.stroke(p); }
+    } else {
+      if (layers.includes(R.local)) { c.strokeStyle = '#e4ded1'; c.lineWidth = 0.7 / k; c.stroke(R.local); }
+      if (layers.includes(R.arterial)) { c.strokeStyle = '#d9d2c2'; c.lineWidth = 0.9 / k; c.stroke(R.arterial); }
+      c.strokeStyle = '#cbbf9f'; c.lineWidth = 1.3 / k; c.stroke(R.major);
+    }
+  } else if (show.roads) {
     if (k > 0.25) { c.strokeStyle = '#d6cfbf'; c.lineWidth = Math.max(11, 3 / k); c.stroke(roadPath); c.strokeStyle = '#ffffff'; c.lineWidth = Math.max(8, 1.5 / k); c.stroke(roadPath); }
     else { c.strokeStyle = k > 0.08 ? '#cdc5b3' : '#d9d2c2'; c.lineWidth = (k > 0.08 ? 1.3 : 0.9) / k; c.stroke(roadPath); }
   }
@@ -679,10 +708,10 @@ el('credit').textContent = 'Built ' + D.meta.built + '. ' + D.meta.credit;
 const guessed = services.filter(s => s.guess).map(s => s.n);
 el('how').innerHTML = [
   'Routes, stops and first and last buses at every stop are LTA\'s (via BusRouter SG, ' + D.meta.busData + '). Times between stops are LTA\'s published first-bus times differenced, from a community feed (' + D.meta.gtfsVersion + ').',
-  'LTA does not publish bus timetables, only how often each service runs. The free data has one average gap between buses per route, so the day is shaped by assumption: 15% more often than average in the peaks (6:30-8:30, 17:00-19:00 on weekdays), 5% less often between them, 15% less early and late. Saturdays and Sundays have no peaks.',
+  'LTA does not publish bus timetables. It does publish, for every service and direction, the range of the gap between buses in four periods: 6:30-8:30, 8:31-16:59, 17:00-19:00 and after 19:00 (LTA DataMall). Buses here run at the middle of each range, at the 8:31-16:59 gap before 6:30, and not at all in a period with no gap. LTA gives no weekend figures, so Saturdays and Sundays run at the off-peak gaps: the daytime one from 8:00 (Sundays 9:00) to 20:00, the evening one otherwise.',
   'Which bus works which trip is not published either. Buses stay on their service, take the next departure from the terminal they reach after at least ' + LAYOVER / 60 + ' minutes there, and go back to the depot when the next one they are needed for is more than ' + WAIT_MAX / 60 + ' minutes away (and the round trip fits). The depot for each service comes from its contract package; ' + (guessed.length ? guessed.join(', ') + ' are not listed, so they use the nearest depot.' : 'every service is listed.'),
   'Buses running empty to and from their depot follow the roads, at 25 km/h: the shortest way, from the bus stop nearest the depot, along roads the bus routes use. Roads no bus route uses, and one-way streets, are not known.',
-  'Trains run at their line\'s average frequency, 5:30 to 23:30, with the same peak shaping, turning round at the ends. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
+  'MRT and LRT trains run to LTA\'s published timetable (LTA DataMall, train GTFS schedule): every trip on weekdays, Saturdays and Sundays or public holidays, short turns included. A train comes out of its depot, joins the line at the station nearest the depot and runs empty to where its first trip starts; after its last trip it runs back the same way. Each line\'s depots are LTA\'s (the East Coast Integrated Depot takes the East-West, Downtown and Thomson-East Coast lines); a train uses whichever is nearest where its day starts. A train with more than 15 minutes to wait at a terminus goes back to its depot instead. Train lengths are fixed by line.',
   'Some buses sleep at the interchanges. Half of each interchange\'s berths (Wikipedia\'s list) are taken overnight by the last buses of the night to finish there, so they do not block earlier arrivals; their service\'s first buses leave from there in the morning. Each depot is drawn with room for the most of its buses it holds at once.',
   'Through the day, a bus between trips waits where its next trip starts. At an interchange it is drawn inside the interchange in its operator\'s colour with a light orange end, apart from the buses parked there overnight (dark orange end). At busy times more buses wait than there are berths; the extra bays, drawn dashed, stand for the interchange\'s bus park.',
   'Bus types (single or double deck) are not in the free data: every bus is drawn 12 m long.',
